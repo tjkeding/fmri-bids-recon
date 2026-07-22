@@ -1,0 +1,21 @@
+# Conda environment for the fmri-bids-recon DICOM-to-BIDS pipeline.
+#
+# Create with:   conda env create -f environment.yml
+#
+# This is the complete and only setup step. Python, all pipeline libraries,
+# dcm2niix, and the BIDS validator are installed by this file.
+name: fmri-bids-recon
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - pydicom==3.0.1
+      - nibabel==5.3.2
+      - numpy==1.26.4   # capped at cubids 1.1.0 ceiling (<=1.26.4); pipeline uses only basic numpy APIs
+      - pyyaml==6.0.2
+      - cubids==1.1.0
+      - pydeface==2.1.0
+      - dcm2niix==1.0.20260416
+      - bids-validator-deno==3.0.0

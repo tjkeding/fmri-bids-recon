@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fmri-bids-recon"
+dynamic = ["version"]
+description = "DICOM-to-BIDS reconstruction pipeline"
+requires-python = ">=3.12"
+dependencies = [
+    "pydicom>=3.0.1",
+    "nibabel>=5.3.2",
+    "numpy>=1.26.4",
+    "pyyaml>=6.0.2",
+    "cubids>=1.1.0",
+    "pydeface>=2.1.0",
+    "dcm2niix>=1.0.20260416",
+    "bids-validator-deno>=3.0.0",
+]
+
+[project.scripts]
+fmri-bids-recon = "fmri_bids_recon.__main__:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "fmri_bids_recon.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["fmri_bids_recon*"]

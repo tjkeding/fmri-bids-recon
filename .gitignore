@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Development-only directories (not published)
+tests/
+tools/
+sandbox/
+RAW_TEST_SUBJ_1/
+
+# Development reports and internal documentation
+bids-recon_*.md
+RUNBOOK.md
+excalidraw.log
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# pytest
+.pytest_cache/
+
+# Conda/pip
+*.egg

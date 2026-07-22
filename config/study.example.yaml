@@ -1,0 +1,70 @@
+# study.example.yaml — fmri-bids-recon study configuration template
+#
+# Copy this file to config/study.yaml (or any path you prefer) and fill in
+# the placeholder values before running the pipeline.  All fields marked
+# REQUIRED must be present.  Fields marked OPTIONAL may be omitted; defaults
+# are noted inline.
+#
+# Placeholder values below are intentionally generic.  Replace every value
+# before use.
+#
+# NOTE: The task registry is maintained automatically in a sidecar file named
+# <config-file>.registry.yaml (e.g., study.yaml.registry.yaml).  Do NOT add
+# a task_registry key to this file; it will be ignored.  The sidecar is
+# created and updated by the pipeline as new task labels are encountered.
+
+# ---------------------------------------------------------------------------
+# Directory layout
+# ---------------------------------------------------------------------------
+
+# REQUIRED. Absolute path to the BIDS dataset root directory.  This directory
+# should already exist and may already contain sub-* directories from prior
+# runs.  study_name is derived automatically from this directory's basename.
+bids_root: '/absolute/path/to/bids_root'
+
+# REQUIRED. Absolute path to the pipeline staging scratch directory.  The
+# pipeline writes intermediate files here before committing outputs to
+# bids_root.  MUST NOT be a subdirectory of bids_root (concurrency hazard).
+staging_root: '/absolute/path/to/staging'
+
+# REQUIRED. Absolute path to the raw DICOM root directory.  Subject- and
+# session-specific paths are resolved by combining dicom_root with the
+# dicom_pattern template below.
+dicom_root: '/absolute/path/to/raw/dicoms'
+
+# REQUIRED. Per-subject/session path pattern relative to dicom_root.
+# Use {sub} and {ses} as placeholders; they are replaced with each subject
+# ID and session label at load time.  For example, '{sub}/{ses}' resolves to
+# '<dicom_root>/001/01' for subject 001, session 01.
+dicom_pattern: '{sub}/{ses}'
+
+# ---------------------------------------------------------------------------
+# Subjects and sessions
+# ---------------------------------------------------------------------------
+
+# REQUIRED. List of subject IDs to process.  Each entry must be alphanumeric
+# (^[a-zA-Z0-9]+$).  Do NOT include the "sub-" prefix.  Duplicate entries are
+# rejected.
+subjects:
+  - '001'
+  - '002'
+
+# REQUIRED. List of session labels to process.  Each entry must be a
+# zero-padded integer with at least 2 digits (^[0-9]{2,}$).  Do NOT include
+# the "ses-" prefix.  Duplicate entries are rejected.
+#
+# The pipeline resolves DICOM paths for every (subject, session) combination
+# (cross product of subjects x sessions).  Pairs whose resolved path does not
+# exist on disk are skipped with an INFO-level log message; no error is raised
+# unless ALL pairs are missing.
+sessions:
+  - '01'
+  - '02'
+
+# ---------------------------------------------------------------------------
+# Optional features
+# ---------------------------------------------------------------------------
+
+# OPTIONAL. Set to true to enable physiological data extraction (e.g., cardiac
+# and respiratory traces).  Defaults to false when omitted.
+physio: false
