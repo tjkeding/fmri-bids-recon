@@ -93,9 +93,9 @@ class StudyConfig:
         subdirectory of ``bids_root`` to prevent concurrency hazards.
     dicom_root : Path
         Absolute path to the raw DICOM root directory.
-    dicom_pattern : str
-        Per-subject/session path pattern under ``dicom_root``.  Supports
-        ``{sub}`` and ``{ses}`` format placeholders.
+    dicom_template : str
+        Per-subject/session path template under ``dicom_root``.  Supports
+        ``{subject}`` and ``{session}`` format placeholders.
     subjects : list[str]
         List of subject IDs to process (alphanumeric, no ``sub-`` prefix).
     sessions : list[str]
@@ -120,7 +120,7 @@ class StudyConfig:
     bids_root: Path
     staging_root: Path
     dicom_root: Path
-    dicom_pattern: str
+    dicom_template: str
     subjects: list[str]
     sessions: list[str]
     physio: bool = False
@@ -189,12 +189,14 @@ def load_config(path: str | Path) -> StudyConfig:
     Raises
     ------
     FileNotFoundError
-        If *path* itself does not exist.
+        If *path* itself does not exist, or if ``subjects`` is a string
+        pointing to a non-existent file.
     ValueError
         If any subject label violates the alphanumeric constraint, if any
         session label is not zero-padded with at least 2 digits, if duplicate
-        entries are found within the subjects or sessions lists, or if
-        ``staging_root`` is a subdirectory of (or equal to) ``bids_root``.
+        entries are found within the subjects or sessions lists, if
+        ``staging_root`` is a subdirectory of (or equal to) ``bids_root``,
+        or if ``subjects`` is a string that is not an absolute path.
     ConfigError
         If no DICOM paths resolve to existing directories after the full
         subjects x sessions cross-product expansion.
@@ -208,8 +210,44 @@ def load_config(path: str | Path) -> StudyConfig:
     bids_root = Path(raw["bids_root"])
     staging_root = Path(raw["staging_root"])
     dicom_root = Path(raw["dicom_root"])
-    dicom_pattern = str(raw["dicom_pattern"])
-    subjects = [str(s) for s in raw["subjects"]]
+    dicom_template = str(raw["dicom_template"])
+    if "{subject}" not in dicom_template:
+        raise ValueError(
+            "dicom_template must contain a '{subject}' placeholder."
+        )
+    if "{session}" not in dicom_template:
+        raise ValueError(
+            "dicom_template must contain a '{session}' placeholder."
+        )
+    raw_subjects = raw["subjects"]
+    if isinstance(raw_subjects, str):
+        subjects_path = Path(raw_subjects)
+        if not subjects_path.is_absolute():
+            raise ValueError(
+                f"subjects file path must be absolute, got: '{raw_subjects}'"
+            )
+        if not subjects_path.exists():
+            raise FileNotFoundError(
+                f"subjects file not found: '{subjects_path}'"
+            )
+        subjects = []
+        with subjects_path.open("r") as fh:
+            for line in fh:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                subjects.append(stripped)
+        if not subjects:
+            raise ValueError(
+                f"subjects file contains no valid entries: '{subjects_path}'"
+            )
+    elif isinstance(raw_subjects, list):
+        subjects = [str(s) for s in raw_subjects]
+    else:
+        raise ValueError(
+            f"subjects must be a YAML list of IDs or an absolute path to a "
+            f"text file, got type: {type(raw_subjects).__name__}"
+        )
     sessions = [str(s) for s in raw["sessions"]]
     physio = bool(raw.get("physio", False))
 
@@ -254,7 +292,7 @@ def load_config(path: str | Path) -> StudyConfig:
     participants: list[ParticipantEntry] = []
     for sub in subjects:
         for ses in sessions:
-            resolved_path = Path(dicom_root) / dicom_pattern.format(sub=sub, ses=ses)
+            resolved_path = Path(dicom_root) / dicom_template.format(subject=sub, session=ses)
             if not resolved_path.exists():
                 _log.info(
                     "DICOM path not found for sub=%s ses=%s; skipping. "
@@ -281,7 +319,7 @@ def load_config(path: str | Path) -> StudyConfig:
                 "subjects": subjects,
                 "sessions": sessions,
                 "dicom_root": str(dicom_root),
-                "dicom_pattern": dicom_pattern,
+                "dicom_template": dicom_template,
             },
         )
 
@@ -315,7 +353,7 @@ def load_config(path: str | Path) -> StudyConfig:
         bids_root=bids_root,
         staging_root=staging_root,
         dicom_root=dicom_root,
-        dicom_pattern=dicom_pattern,
+        dicom_template=dicom_template,
         subjects=subjects,
         sessions=sessions,
         physio=physio,

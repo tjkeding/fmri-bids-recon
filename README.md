@@ -76,11 +76,12 @@ Required fields:
 bids_root: '/absolute/path/to/bids_root'       # Output BIDS dataset
 staging_root: '/absolute/path/to/staging'       # Intermediate staging (must not be inside bids_root)
 dicom_root: '/absolute/path/to/raw/dicoms'      # Root of raw DICOM tree
-dicom_pattern: '{sub}/{ses}'                    # Path pattern under dicom_root
+dicom_template: '{subject}/{session}'           # Path template under dicom_root
 
-subjects:
+subjects:                                        # Inline list...
   - '001'
   - '002'
+# subjects: '/absolute/path/to/subject_ids.txt' # ...or text file
 
 sessions:
   - '01'

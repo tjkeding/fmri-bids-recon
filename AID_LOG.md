@@ -15,7 +15,7 @@ AI assistance was utilized for **DICOM-to-BIDS reconstruction pipeline developme
 - Code architecture and design (pipeline staging model, guard system, geometry-primary fieldmap association)
 - Statistical methodology review and validation (geometry tolerance calibration, volume-count enforcement, acquisition-signature drift detection)
 - Implementation of pipeline modules (7 pipeline stages, 14 integrity guards, configuration loading, task registry persistence)
-- Test suite development and validation (409 tests covering unit, integration, edge-case, and guard-coverage scenarios)
+- Test suite development and validation (418 tests covering unit, integration, edge-case, and guard-coverage scenarios)
 - Documentation authoring and refinement
 
 AI was **not** used for:
@@ -69,7 +69,7 @@ The researcher maintained full oversight and decision authority throughout the d
 
 - **(c)** Approved all implementation plans (technical specifications) before any code generation was executed. This included the recent package rename from bids-recon to fmri-bids-recon, the creation of pyproject.toml for pip-installable distribution, and the transition from PYTHONPATH invocation to console entry points.
 
-- **(d)** Validated all test results and ensured test coverage aligned with the integrity guarantees required by the pipeline. The 409-test suite was reviewed for assertion strength (no weakened postconditions) and guard-coverage completeness (structural verification via source-file scanning).
+- **(d)** Validated all test results and ensured test coverage aligned with the integrity guarantees required by the pipeline. The 418-test suite was reviewed for assertion strength (no weakened postconditions) and guard-coverage completeness (structural verification via source-file scanning).
 
 - **(e)** Made all domain-specific decisions regarding pipeline architecture, algorithmic choices, and analytical strategy, including: the staging-then-commit execution model, the BIDS derivatives directory naming convention, the exit-code taxonomy, and the scope of each integrity guard.
 
@@ -104,3 +104,4 @@ Raw session transcripts are excluded for privacy reasons. The structured reports
 | Date | Version | Summary |
 |------|---------|---------|
 | 2026-07-22 | 1.0.0 | Initial publication. Pipeline development complete (7 stages, 14 integrity guards, 409 tests). Package renamed to fmri-bids-recon with pip-installable distribution via pyproject.toml. Documentation suite: README, RUNBOOK, INPUT_SPECIFICATION. AID audit trail: 42 development reports covering brainstorm, critical review, implementation, testing, and documentation phases. |
+| 2026-07-22 | 1.1.0 | Configuration ergonomics: renamed dicom_pattern to dicom_template with descriptive {subject}/{session} placeholders; added file-based subject roster input as alternative to inline YAML lists; updated documentation and example config. Test suite expanded from 409 to 418 tests. AID audit trail: 47 development reports. |

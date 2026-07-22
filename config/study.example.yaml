@@ -29,29 +29,42 @@ staging_root: '/absolute/path/to/staging'
 
 # REQUIRED. Absolute path to the raw DICOM root directory.  Subject- and
 # session-specific paths are resolved by combining dicom_root with the
-# dicom_pattern template below.
+# dicom_template below.
 dicom_root: '/absolute/path/to/raw/dicoms'
 
-# REQUIRED. Per-subject/session path pattern relative to dicom_root.
-# Use {sub} and {ses} as placeholders; they are replaced with each subject
-# ID and session label at load time.  For example, '{sub}/{ses}' resolves to
-# '<dicom_root>/001/01' for subject 001, session 01.
-dicom_pattern: '{sub}/{ses}'
+# REQUIRED. Per-subject/session path template relative to dicom_root.
+# {subject} is replaced by each ID from the subjects list.
+# {session} is replaced by each label from the sessions list.
+# Any other text is treated as a literal directory name.
+#
+# Examples:
+#   '{subject}/{session}'                -> dicom_root/001/01
+#   '{subject}/ses-{session}/DICOMS'     -> dicom_root/001/ses-01/DICOMS
+#   'wave{session}/{subject}/raw'        -> dicom_root/wave01/001/raw
+dicom_template: '{subject}/{session}'
 
 # ---------------------------------------------------------------------------
 # Subjects and sessions
 # ---------------------------------------------------------------------------
 
-# REQUIRED. List of subject IDs to process.  Each entry must be alphanumeric
-# (^[a-zA-Z0-9]+$).  Do NOT include the "sub-" prefix.  Duplicate entries are
-# rejected.
+# REQUIRED. Subject IDs to process, specified as either:
+#   (a) An inline YAML list:  subjects: ['001', '002']
+#   (b) An absolute path to a single-column text file:
+#       subjects: '/absolute/path/to/subject_ids.txt'
+#       (blank lines and # comment lines are skipped)
+#
+# Each entry must be alphanumeric (^[a-zA-Z0-9]+$).  Do NOT include the
+# "sub-" prefix.  Duplicate entries are rejected.
 subjects:
   - '001'
   - '002'
 
-# REQUIRED. List of session labels to process.  Each entry must be a
-# zero-padded integer with at least 2 digits (^[0-9]{2,}$).  Do NOT include
-# the "ses-" prefix.  Duplicate entries are rejected.
+# REQUIRED. List of session labels to process.  May be specified as a
+# multi-line list (below) or inline: sessions: ['01', '02']
+#
+# Each entry must be a zero-padded integer with at least 2 digits
+# (^[0-9]{2,}$).  Do NOT include the "ses-" prefix.  Duplicate entries
+# are rejected.
 #
 # The pipeline resolves DICOM paths for every (subject, session) combination
 # (cross product of subjects x sessions).  Pairs whose resolved path does not

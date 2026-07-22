@@ -15,8 +15,8 @@ The pipeline accepts a single positional argument: the absolute path to a YAML c
 | `bids_root` | string (absolute path) | Must be an existing directory or creatable by the pipeline. | Root of the output BIDS dataset. The `study_name` property is derived from this directory's basename. |
 | `staging_root` | string (absolute path) | Must NOT be a subdirectory of (or equal to) `bids_root`. Enforced at load time. | Scratch directory for intermediate pipeline state. Written during Phase 1 (convert), read during Phase 3 (assemble). |
 | `dicom_root` | string (absolute path) | Must exist on disk. | Root of the raw DICOM directory tree. |
-| `dicom_pattern` | string | Must contain `{sub}` and `{ses}` format placeholders. | Per-subject/session path pattern relative to `dicom_root`. Evaluated as `dicom_root / dicom_pattern.format(sub=<sub>, ses=<ses>)`. |
-| `subjects` | list of strings | Each entry must match `^[a-zA-Z0-9]+$`. No `sub-` prefix. No duplicates. | Subject IDs to process. |
+| `dicom_template` | string | Must contain `{subject}` and `{session}` format placeholders. | Per-subject/session path template relative to `dicom_root`. Evaluated as `dicom_root / dicom_template.format(subject=<id>, session=<label>)`. |
+| `subjects` | list of strings, or string (absolute path) | Each entry must match `^[a-zA-Z0-9]+$`. No `sub-` prefix. No duplicates. If a string, must be an absolute path to an existing file. | Subject IDs to process. If a string, treated as an absolute path to a single-column text file (blank lines and `#` comment lines are skipped). |
 | `sessions` | list of strings | Each entry must match `^[0-9]{2,}$` (zero-padded integer, minimum 2 digits). No `ses-` prefix. No duplicates. | Session labels to process. |
 
 ### 1.2 Optional Fields
@@ -43,6 +43,7 @@ The following rules are enforced by `load_config()` at startup. Violations raise
 1. **Subject label format**: every entry in `subjects` must match `^[a-zA-Z0-9]+$`.
 2. **Session label format**: every entry in `sessions` must match `^[0-9]{2,}$`.
 3. **No duplicate subjects**: duplicate entries within the `subjects` list are rejected.
+3a. **Subjects file path**: if `subjects` is a string, it must be an absolute path to an existing file containing at least one valid entry.
 4. **No duplicate sessions**: duplicate entries within the `sessions` list are rejected.
 5. **Staging isolation**: `staging_root` must not be a subdirectory of (or equal to) `bids_root`. This prevents concurrency hazards where pipeline writes to staging would modify the BIDS dataset in-flight.
 6. **At least one resolved participant**: after the `subjects` x `sessions` cross product is expanded and filtered to existing DICOM paths, at least one `ParticipantEntry` must remain. If all paths are missing, a `ConfigError` is raised.
@@ -66,7 +67,7 @@ Each registry entry contains:
 
 ### 2.1 Directory Structure
 
-The pipeline expects raw DICOM files organized under `dicom_root` according to `dicom_pattern`. For the default pattern `{sub}/{ses}`, the expected structure is:
+The pipeline expects raw DICOM files organized under `dicom_root` according to `dicom_template`. For the default template `{subject}/{session}`, the expected structure is:
 
 ```
 <dicom_root>/
