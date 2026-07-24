@@ -81,3 +81,9 @@ sessions:
 # OPTIONAL. Set to true to enable physiological data extraction (e.g., cardiac
 # and respiratory traces).  Defaults to false when omitted.
 physio: false
+
+# OPTIONAL. Set to true to enable anatomical defacing via pydeface.
+# Requires FSL (specifically flirt) to be installed and on PATH.
+# Defaced copies are written to derivatives/defaced/; the analysis
+# anat/ directories are never modified. Defaults to false when omitted.
+deface: false

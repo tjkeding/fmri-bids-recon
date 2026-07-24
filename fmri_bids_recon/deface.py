@@ -13,8 +13,25 @@ import subprocess
 from pathlib import Path
 
 from .config import StudyConfig
+from .errors import ToolUnavailableError
 
 logger = logging.getLogger(__name__)
+
+
+def assert_deface_tools() -> None:
+    """Pre-flight: verify pydeface and FSL flirt are on PATH.
+
+    Called at pipeline startup when config.deface is True. Raises
+    ToolUnavailableError if either binary is absent, halting the
+    pipeline before any DICOM processing begins.
+    """
+    missing = [t for t in ("pydeface", "flirt") if shutil.which(t) is None]
+    if missing:
+        raise ToolUnavailableError(
+            f"deface is enabled but required tool(s) not on PATH: "
+            f"{', '.join(missing)}. Install the required tools or "
+            f"set deface: false in the config."
+        )
 
 
 def deface(config: StudyConfig, tool: str = "pydeface") -> list[Path]:
@@ -76,29 +93,21 @@ def deface(config: StudyConfig, tool: str = "pydeface") -> list[Path]:
 
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            try:
-                if tool == "pydeface":
-                    subprocess.run(
-                        ["pydeface", str(input_path), "--outfile", str(output_path)],
-                        check=True,
-                    )
-                elif tool == "afni_refacer":
-                    subprocess.run(
-                        [
-                            "@afni_refacer_run",
-                            "-input", str(input_path),
-                            "-mode_deface",
-                            "-prefix", str(output_path),
-                        ],
-                        check=True,
-                    )
-            except FileNotFoundError:
-                logger.warning(
-                    "Defacing tool '%s' not found on PATH; skipping %s.",
-                    tool,
-                    input_path,
+            if tool == "pydeface":
+                subprocess.run(
+                    ["pydeface", str(input_path), "--outfile", str(output_path)],
+                    check=True,
                 )
-                continue
+            elif tool == "afni_refacer":
+                subprocess.run(
+                    [
+                        "@afni_refacer_run",
+                        "-input", str(input_path),
+                        "-mode_deface",
+                        "-prefix", str(output_path),
+                    ],
+                    check=True,
+                )
 
             if output_path.exists():
                 output_paths.append(output_path)

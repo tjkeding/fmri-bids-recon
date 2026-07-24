@@ -102,6 +102,10 @@ class StudyConfig:
         List of session labels to process (zero-padded integer, at least 2 digits).
     physio : bool
         Whether to extract physiological data.  Defaults to False.
+    deface : bool
+        Whether to run the defacing stage.  Defaults to False.  Requires
+        ``pydeface`` and FSL ``flirt`` on PATH; the pipeline verifies both
+        at startup when this flag is True.
     participants : list[ParticipantEntry]
         Derived. Ordered list of participant/session entries resolved from the
         cross product of subjects x sessions.  Populated by load_config().
@@ -124,6 +128,7 @@ class StudyConfig:
     subjects: list[str]
     sessions: list[str]
     physio: bool = False
+    deface: bool = False
     participants: list[ParticipantEntry] = field(default_factory=list)
     task_registry: dict[str, TaskRegistryEntry] = field(default_factory=dict)
 
@@ -250,6 +255,7 @@ def load_config(path: str | Path) -> StudyConfig:
         )
     sessions = [str(s) for s in raw["sessions"]]
     physio = bool(raw.get("physio", False))
+    deface = bool(raw.get("deface", False))
 
     # Validate subject labels
     for sub in subjects:
@@ -357,6 +363,7 @@ def load_config(path: str | Path) -> StudyConfig:
         subjects=subjects,
         sessions=sessions,
         physio=physio,
+        deface=deface,
         participants=participants,
         task_registry=task_registry,
     )

@@ -22,7 +22,7 @@ The pipeline executes seven stages in sequence:
 | 2 | **Guard check** | Asserts that all 14 integrity guards executed and passed. Runs before any output is committed to `bids_root`. |
 | 3 | **Assemble** | Writes the BIDS directory tree: NIfTI files, JSON sidecars, scans/sessions/participants TSVs, conversion reports, and fieldmap association metadata (IntendedFor + B0FieldIdentifier/B0FieldSource). |
 | 4 | **Registry save** | Persists the task registry to a sidecar YAML file alongside the configuration. |
-| 5 | **Deface** | Generates defaced copies of anatomical images in `derivatives/defaced/` via pydeface. The analysis `anat/` directories are never modified. |
+| 5 | **Deface** | When `deface: true` is set in the study config, generates defaced copies of anatomical images in `derivatives/defaced/` via pydeface. The analysis `anat/` directories are never modified. Skipped when `deface: false` (the default). |
 | 6 | **Validate** | Runs bids-validator-deno against the assembled tree and emits a grouped findings report. |
 | 7 | **CUBIDs** | Generates an Entity Sets / Parameter Groups review artifact via cubids (non-blocking; skipped if cubids is not installed). |
 
@@ -30,6 +30,7 @@ The pipeline executes seven stages in sequence:
 
 - **conda** (or **mamba**) available on PATH.
 - Outbound network access during one-time environment setup (conda downloads packages from conda-forge and PyPI).
+- **FSL** (any version): required only if the `deface` stage is enabled (`deface: true` in the study config). Specifically, `flirt` must be on PATH. FSL must be installed separately; it is not included in the conda environment.
 - No root or `sudo` access is required.
 
 ## Installation
@@ -88,6 +89,7 @@ sessions:
   - '02'
 
 physio: false    # Set true to extract physiological traces
+deface: false    # Set true to deface anatomicals (requires FSL)
 ```
 
 See `config/study.example.yaml` for full documentation of each field, and `INPUT_SPECIFICATION.md` for the exhaustive input schema.
@@ -167,7 +169,7 @@ Managed via conda (`environment.yml`):
 | dcm2niix | 1.0.20260416 | DICOM-to-NIfTI conversion |
 | bids-validator-deno | 3.0.0 | BIDS spec compliance validation |
 | cubids | 1.1.0 | Entity/parameter group review |
-| pydeface | 2.1.0 | Anatomical defacing |
+| pydeface | 2.1.0 | Anatomical defacing (requires FSL `flirt` on PATH) |
 
 ## License
 

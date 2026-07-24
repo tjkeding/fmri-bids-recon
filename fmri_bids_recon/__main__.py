@@ -32,7 +32,7 @@ from .stage5_render import render
 from .stage6_validate import assert_guards_executed, run_bids_validator, generate_cubids_report, ALL_GUARD_NAMES
 from .report import write_conversion_report
 from .manifest import read_manifest, update_manifest, should_skip, ManifestEntry
-from .deface import deface
+from .deface import assert_deface_tools, deface
 from .errors import GuardError, ConfigError, ToolUnavailableError, BidsReconError
 from . import __version__
 
@@ -128,6 +128,14 @@ def main() -> None:
     except Exception as exc:
         logger.error('dcm2niix version check failed: %s', exc)
         sys.exit(2)
+
+    # --- Deface pre-flight ---
+    if config.deface:
+        try:
+            assert_deface_tools()
+        except ToolUnavailableError as exc:
+            logger.error('Deface pre-flight failed: %s', exc)
+            sys.exit(4)
 
     bids_root = Path(config.bids_root)
 
@@ -300,8 +308,9 @@ def main() -> None:
         config.task_registry.update(merged_registry)
         save_registry(config, args.config)
 
-        # === PHASE 5: DEFACE (hardcoded pydeface) ===
-        deface(config)
+        # === PHASE 5: DEFACE ===
+        if config.deface:
+            deface(config)
 
         # === PHASE 6: VALIDATE ===
         findings = run_bids_validator(bids_root)
