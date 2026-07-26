@@ -300,7 +300,7 @@ Make exactly these three edits to hpc/Apptainer.def, leaving all other lines unc
 3. In the x86_64 branch, immediately AFTER the line:
         wget -q "${ASSET_URL}" -O dcm2niix_lnx.zip
    and BEFORE the line:
-        unzip -o dcm2niix_lnx.zip -d /tmp/dcm2niix_bin
+        unzip -o dcm2niix_lnx.zip -d <temp_dir>/dcm2niix_bin
    insert this new line (matching the surrounding 8-space indentation):
         echo "${DCM2NIIX_SHA256}  dcm2niix_lnx.zip" | sha256sum -c -
       </spec>

@@ -377,7 +377,7 @@
       <description>
         The conversion report writes the absolute config_path to the provenance section
         (line 104: f"- **Config path**: {config_path}"). This embeds the local filesystem path
-        (e.g., /home/user/projects/study/config.yaml) in a report that may be committed to
+        (e.g., <project_dir>/config.yaml) in a report that may be committed to
         a repository or shared alongside the dataset. While not PHI, this constitutes a local
         path leak that may reveal directory structure, username, or project organization.
       </description>

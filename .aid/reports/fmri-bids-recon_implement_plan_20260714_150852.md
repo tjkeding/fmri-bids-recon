@@ -101,7 +101,7 @@
     Verified at plan time on the development machine. The build must not assume these hold on the cluster; T9's runtime
     version assertion (C15) is what enforces them where it matters.
       conda env `fmri-bids-recon`: python 3.12.13, pydicom 3.0.2, nibabel 5.4.2, numpy 2.5.1
-      dcm2niix v1.0.20260416 at $CONDA_PREFIX/bin/dcm2niix  (EXACTLY the T9 version floor)
+      dcm2niix v1.0.20260416 (EXACTLY the T9 version floor)
       bids-validator on PATH
     BUILD PREREQUISITE, NOT YET INSTALLED: PyYAML (required by C2, the study config loader). Per the Environment
     Pre-Flight contract the orchestrator installs this only on explicit per-invocation user approval, before any

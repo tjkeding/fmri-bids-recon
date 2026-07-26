@@ -9,7 +9,7 @@
     <coverage_pct>n/a</coverage_pct>
     <failures />
     <receipt_verification>
-      <nonce>F074DC7B-349D-4BC9-8DBC-48F695AB11F1</nonce>
+      <nonce>REDACTED</nonce>
       <all_checks_passed>true</all_checks_passed>
       <checks>freshness/nonce=match, freshness/clock=match, freshness/duration=match, freshness/summary=match, freshness/collect_total=match, freshness/receipt_file_mtime=match, freshness/receipt_file_nonce=match, freshness/receipt_file_summary=match</checks>
     </receipt_verification>
