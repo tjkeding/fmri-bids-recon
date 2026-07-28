@@ -23,7 +23,7 @@ The pipeline accepts a single positional argument: the absolute path to a YAML c
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `physio` | boolean | `false` | Enable physiological data extraction (Siemens PMU DICOM parsing, temporal association, BIDS export). |
+| `physio` | boolean | `false` | Enable physiological data extraction. When true, the pipeline discovers dcm2niix's native per-channel physio export in the staging directory, associates each recording with the nearest preceding BOLD run via a trigger-derived volume-count geometry guard, and copies the files verbatim into the BIDS func/ tree. |
 | `deface` | boolean | `false` | Enable anatomical defacing via pydeface. When true, the pipeline resolves `flirt` via the `FSLDIR` environment variable (falling back to PATH lookup) and verifies both `pydeface` and `flirt` at startup. Halts immediately if either is absent. Defaced copies are written to `derivatives/defaced/`; the analysis `anat/` directories are never modified. |
 
 ### 1.3 Derived Fields (populated by `load_config()`)
@@ -99,9 +99,15 @@ The classifier (stage 2) assigns BIDS roles based on sidecar fields written by d
 
 ### 2.3 Physiological Data (optional)
 
-When `physio: true`, the pipeline parses Siemens PMU (Physiological Monitoring Unit) DICOM exports stored in the private element `(7fe1,1010)`. Supported channel types: ECG, PULS, RESP, EXT, ACQUISITION_INFO.
+When `physio: true`, the pipeline ingests dcm2niix's native per-channel BIDS physiological export. dcm2niix (>= 1.0.20260416) detects vendor-specific physiological recordings in the DICOM source (e.g., Siemens PhysioLog series with SOPClassUID 1.2.840.10008.5.1.4.1.1.66) and produces per-channel `.json` + `.tsv.gz` pairs in the staging directory, named `{series_number}_{description}_recording-{label}_physio.*`. No NIfTI companion is produced for these files.
 
-PMU DICOMs must be present in the same session directory as the imaging DICOMs. Association with BOLD runs uses temporal adjacency and geometry matching.
+**Classification**: physio sidecars are identified by the presence of all three BIDS-required fields for `_physio.json` files: `SamplingFrequency`, `StartTime`, and `Columns` (per BIDS specification v1.11.1). This is a spec-grounded, vendor-agnostic classification signal. Sidecars meeting this criterion are separated from the imaging series list during `load_series()` and routed to the physio ingestion path.
+
+**Channel labels**: dcm2niix produces three channels for Siemens PhysioLog data: `cardiac`, `respiratory`, and `external_trigger`. The `external_trigger` channel carries a `trigger` column encoding volume-onset pulses. Other scanners or dcm2niix versions may produce different channel sets; the pipeline handles any label that dcm2niix encodes in the `_recording-{label}_physio` filename convention.
+
+**Association**: each physio recording (grouped by SeriesNumber) is associated with the nearest preceding BOLD run by SeriesNumber. A trigger-derived volume-count geometry guard verifies the association: the number of rising edges in the trigger column must equal the BOLD run's `n_volumes`. A mismatch raises `PhysioAssociationError` (a `GuardError` subclass) and halts the pipeline.
+
+**Export**: the pipeline copies dcm2niix's native per-channel files verbatim (no re-derivation or recombination) into the BIDS `func/` directory, renaming them to the standard BIDS pattern: `{run_prefix}_recording-{label}_physio.{json,tsv.gz}`.
 
 ---
 
@@ -144,6 +150,49 @@ conda env create -f environment.yml -n fmri-bids-recon
 conda activate fmri-bids-recon
 pip install -e .
 ```
+
+### 3.5 HPC Module-Based Environments
+
+On HPC clusters where software is provided via environment modules (e.g., `module load`), the install and run steps must follow a specific ordering to prevent two classes of contamination:
+
+1. **Install-time contamination**: loading FSL before `pip install` injects FSL's Python 3.11 site-packages into the environment. This causes pip to either fail with permission errors when attempting to upgrade FSL-owned packages, or silently skip installation of Python 3.12 wheels for packages FSL already provides (numpy, scipy, pandas), resulting in ABI-incompatible C extensions at runtime.
+
+2. **Run-time PATH shadowing**: if FSL's `bin/` directory appears earlier on PATH than the conda environment's `bin/`, the system-provided `dcm2niix` (potentially an older, incompatible version) takes priority over the pip-installed copy.
+
+**Install sequence** (one-time, clean shell without FSL loaded):
+
+```bash
+module load miniconda
+conda create -n fmri-bids-recon python=3.12 -y
+conda activate fmri-bids-recon
+pip install git+https://github.com/tjkeding/fmri-bids-recon.git
+```
+
+If the default home-directory quota is insufficient for the conda environment, use the `-p` flag to place it on a project or scratch filesystem:
+
+```bash
+conda create -p /path/to/project/envs/fmri-bids-recon python=3.12 -y
+```
+
+**Run sequence** (each reconstruction):
+
+```bash
+module load FSL
+module load miniconda
+conda activate fmri-bids-recon
+fmri-bids-recon <CONFIG>
+```
+
+`module load FSL` must precede `conda activate` so that the conda environment's `bin/` directory is prepended to PATH after FSL's, giving conda's binaries (including `dcm2niix` >= 1.0.20260416) priority.
+
+The pipeline provides two runtime guards against module-system contamination:
+
+| Guard | Location | Mechanism |
+|-------|----------|-----------|
+| sys.path sanitization | `__main__.py` (`_sanitize_sys_path()`) | At startup, strips foreign-version Python site-packages entries from `sys.path` and `PYTHONPATH` before scientific library imports. Version-aware: generalizes to any module that injects foreign-version paths. Complete no-op in clean environments. |
+| FSLDIR-based tool resolution | `deface.py` (`_resolve_flirt()`, `_build_fsl_env()`) | Resolves `flirt` via `$FSLDIR/bin/flirt` rather than PATH lookup. At deface time, constructs a scoped environment dict (a copy of `os.environ` with `$FSLDIR/bin` appended to PATH and `FSLOUTPUTTYPE=NIFTI_GZ` set) and passes it via the `env=` parameter to `subprocess.run()`. The global `os.environ` is never mutated. |
+
+These guards mean that a simple `module load FSL` followed by `conda activate` is sufficient. No manual PATH manipulation, environment variable exports, or FSL shell configuration scripts (`source $FSLDIR/etc/fslconf/fsl.sh`) are required.
 
 ---
 
@@ -200,5 +249,5 @@ The pipeline writes the following directory tree under `bids_root`:
 
 1. **Single-site assumption**: the classifier and geometry tolerances are validated against Siemens XA30 DICOM output. Other scanner vendors or software versions may produce sidecar fields that the classifier does not recognize.
 2. **No incremental fieldmap re-pairing**: if new sessions are added after the initial run, fieldmap pairs are computed independently per session. Cross-session fieldmap sharing is not supported.
-3. **Physiological data restricted to Siemens PMU format**: other physiological recording formats (BIOPAC, BrainVision) are not parsed.
+3. **Physiological data requires dcm2niix native export**: the pipeline ingests dcm2niix's native per-channel BIDS physio output (`.json` + `.tsv.gz` pairs with `SamplingFrequency`, `StartTime`, and `Columns` fields). It does not parse raw vendor-specific DICOM private elements directly. Any scanner or protocol whose physiological recordings dcm2niix decodes into this native format is supported; those it does not decode are not available to the pipeline.
 4. **Defacing requires FSL**: the `pydeface` package is a Python wrapper around FSL's `flirt`. When `deface: true` is set in the study config, the pipeline resolves `flirt` via the `FSLDIR` environment variable (falling back to PATH lookup) and verifies both tools at startup. On HPC clusters using environment modules, `module load FSL` sets `FSLDIR`; no additional PATH manipulation or `source fsl.sh` is required.

@@ -63,6 +63,47 @@ bids-validator-deno --version         # >= 3.0.0
 python -c "import pydicom, nibabel, numpy, yaml; print('ok')"
 ```
 
+## Running on HPC Systems
+
+On HPC clusters where software is provided via environment modules, the install and run steps must follow a specific ordering to avoid dependency conflicts between the conda environment and FSL's bundled Python packages.
+
+### Install (one-time)
+
+Do **not** load FSL during installation. The FSL module injects its own Python site-packages, which can cause pip to skip or misresolve Python 3.12 wheels for packages that FSL already bundles (numpy, scipy, pandas).
+
+```bash
+module load miniconda
+conda create -n fmri-bids-recon python=3.12 -y
+conda activate fmri-bids-recon
+pip install git+https://github.com/tjkeding/fmri-bids-recon.git
+```
+
+If the default home-directory quota is insufficient, create the environment on a project filesystem:
+
+```bash
+conda create -p /path/to/project/envs/fmri-bids-recon python=3.12 -y
+conda activate /path/to/project/envs/fmri-bids-recon
+pip install git+https://github.com/tjkeding/fmri-bids-recon.git
+```
+
+### Run (each reconstruction)
+
+Load FSL **before** activating the conda environment. This ensures that `conda activate` places its `bin/` directory earlier on PATH than FSL's, so the pip-installed `dcm2niix` (version >= 1.0.20260416) takes priority over any older system copy.
+
+```bash
+module load FSL
+module load miniconda
+conda activate fmri-bids-recon
+fmri-bids-recon config/my_study.yaml
+```
+
+The pipeline reads the `FSLDIR` environment variable (set by `module load FSL`) to locate `flirt` directly. No `source $FSLDIR/etc/fslconf/fsl.sh` or manual PATH manipulation is required.
+
+Two runtime guards protect against module-system contamination:
+
+1. **sys.path sanitization**: at startup, the pipeline strips foreign-version Python site-packages entries (e.g., FSL's Python 3.11 paths in a Python 3.12 environment) from `sys.path` and `PYTHONPATH`.
+2. **FSLDIR-based tool resolution**: `flirt` is resolved via `$FSLDIR/bin/flirt` rather than PATH lookup, avoiding circular PATH conflicts between conda and FSL.
+
 ## Configuration
 
 Create a study configuration YAML from the provided template:
@@ -140,18 +181,20 @@ The pipeline enforces 14 named guards:
 |-------|-------------|
 | `dcm2niix_version_floor` | dcm2niix version meets the minimum verified floor. |
 | `anat_suffix_physics` | Physics-derived verdict agrees with the anatomical name token. |
+| `opposite_pe_within_pair` | Fieldmap pair members within a geometry group carry opposite phase-encoding directions. |
+| `dir_label_pe_agreement` | A fieldmap's _PA/_AP description token agrees with its physics-derived PE label. |
+| `fieldmap_pairing_unambiguous` | Every geometry group's fieldmap series split evenly into phase-encoding-opposite pairs (or no fieldmaps were present). |
+| `fieldmap_target_geometry_match` | A target series (BOLD/DWI/SBRef) has at least one geometry-compatible fieldmap pair available for assignment. |
+| `pe_axis_target_match` | The assigned fieldmap pair's phase-encoding axis matches the target's (implied by geometry compatibility). |
+| `association_unambiguous` | Multiple geometry-eligible fieldmap pairs for a target are disambiguated by nearest acquisition time without a tie. |
+| `no_orphan_pairs` | Every validated fieldmap pair is assigned to at least one target series. |
 | `label_injectivity` | No two distinct series descriptions resolve to the same BIDS label. |
 | `non_empty_labels` | No series description strips to an empty label. |
 | `no_label_drift` | A known description re-derives to the same label as previously recorded. |
 | `no_rename_collision` | No undeclared task rename detected via signature matching. |
 | `exact_volume_counts` | BOLD volume counts match the registered expected count. |
-| `fmap_phase_encoding_opposite` | Fieldmap pair members have opposite phase-encoding directions. |
-| `fmap_phase_encoding_label_match` | Phase-encoding direction agrees with the _PA/_AP name token. |
-| `fmap_geometry_match` | Fieldmap pair members pass the five-criterion geometry check. |
-| `fmap_coverage_complete` | Every functional/diffusion target has at least one valid fieldmap pair. |
-| `fmap_sbref_geometry_match` | SBRef passenger series passes the geometry check against its host pair. |
-| `physio_association` | Physio file geometry matches its candidate BOLD run. |
-| `conversion_success` | dcm2niix returned exit status 0. |
+
+Two further invariants -- dcm2niix conversion success and physio run association/geometry -- are enforced via immediate exceptions (`ConversionError`, `PhysioAssociationError`, `PhysioParseError`, all `GuardError` subclasses) rather than the named meta-guard registry above, and so do not appear in `ALL_GUARD_NAMES`.
 
 All guards initialize to `False` and self-record to `True` after their check passes. The meta-guard (`assert_guards_executed`) runs before any output is written and halts if any guard is still `False`.
 

@@ -20,7 +20,6 @@ from .runs import Excluded
 from .labels import RegistryDelta
 from .config import TaskRegistryEntry
 from .errors import ReviewFlag
-from .physio import PhysioLog, PhysioChannel, AcquisitionInfo
 
 # ---------------------------------------------------------------------------
 # Encoding
@@ -33,9 +32,6 @@ _DATACLASS_TYPES = (
     Excluded,
     RegistryDelta,
     TaskRegistryEntry,
-    PhysioLog,
-    PhysioChannel,
-    AcquisitionInfo,
 )
 
 

@@ -200,13 +200,33 @@ def _to_float_tuple_or_none(value: object) -> tuple[float, ...] | None:
     return tuple(float(v) for v in value)
 
 
-def load_series(staging: Path) -> list[Series]:
+_PHYSIO_REQUIRED_FIELDS = ("SamplingFrequency", "StartTime", "Columns")
+
+
+def _is_physio_sidecar(raw: dict) -> bool:
+    """True if *raw* declares every BIDS-required _physio.json field.
+
+    Per the BIDS specification (physiological recordings), SamplingFrequency,
+    StartTime, and Columns are REQUIRED for any _physio.json sidecar,
+    independent of scanner vendor or converter. This is the sole
+    classification signal; filename conventions are deliberately not used,
+    since they vary across dcm2niix versions and vendors.
+    """
+    return all(field in raw for field in _PHYSIO_REQUIRED_FIELDS)
+
+
+def load_series(staging: Path) -> tuple[list[Series], list[Path]]:
     """Load all Series objects from a staging directory.
 
-    Iterates over every JSON sidecar found directly in ``staging``, pairs each
-    with its companion NIfTI file, opens the NIfTI header for geometry, and
-    constructs a :class:`Series` instance. The returned list is sorted by
-    ``series_number`` (ascending).
+    Iterates over every JSON sidecar found directly in ``staging``. Sidecars
+    that satisfy :func:`_is_physio_sidecar` (i.e. carry all three
+    BIDS-required physiological-recording fields: SamplingFrequency,
+    StartTime, and Columns) are excluded from NIfTI-companion resolution and
+    Series construction; their paths are collected separately for physio.py to
+    consume. All remaining sidecars are paired with their companion NIfTI
+    file, the NIfTI header is opened for geometry, and a :class:`Series`
+    instance is constructed. The Series list is sorted by ``series_number``
+    (ascending); the physio list retains glob sorted order.
 
     Parameters
     ----------
@@ -215,19 +235,27 @@ def load_series(staging: Path) -> list[Series]:
 
     Returns
     -------
-    list[Series]
-        All successfully loaded series, sorted by SeriesNumber.
+    tuple[list[Series], list[Path]]
+        A 2-tuple of (series_list, physio_sidecars). ``series_list`` contains
+        all imaging Series sorted by SeriesNumber. ``physio_sidecars`` contains
+        the paths of all sidecars classified as physiological recordings.
 
     Raises
     ------
     FileNotFoundError
-        Propagated from :func:`_find_nifti` if a companion NIfTI is absent.
+        Propagated from :func:`_find_nifti` if a companion NIfTI is absent
+        for any non-physio sidecar.
     """
     series_list: list[Series] = []
+    physio_sidecars: list[Path] = []
 
     for sidecar_path in sorted(staging.glob("*.json")):
         with sidecar_path.open("r", encoding="utf-8") as fh:
             raw: dict = json.load(fh)
+
+        if _is_physio_sidecar(raw):
+            physio_sidecars.append(sidecar_path)
+            continue
 
         nifti_path = _find_nifti(sidecar_path)
         img = nib.load(str(nifti_path))
@@ -287,7 +315,7 @@ def load_series(staging: Path) -> list[Series]:
         series_list.append(s)
 
     series_list.sort(key=lambda s: s.series_number)
-    return series_list
+    return series_list, physio_sidecars
 
 
 def modality_token(s: Series) -> str:

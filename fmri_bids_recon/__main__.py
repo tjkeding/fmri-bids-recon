@@ -50,7 +50,7 @@ from .stage2_classify import classify, Role
 from .labels import resolve_labels
 from .runs import check_volume_counts, assign_run_indices
 from .stage3_map import order_series, pair_fieldmaps, map_fieldmaps
-from .physio import parse_physio_dicom, associate_physio, write_physio
+from .physio import discover_native_physio, associate_native_physio, write_physio
 from .stage4_assemble import assemble
 from .stage5_render import render
 from .stage6_validate import assert_guards_executed, run_bids_validator, generate_cubids_report, ALL_GUARD_NAMES
@@ -197,7 +197,7 @@ def main() -> None:
 
             # Stage 1
             staging = convert_to_staging(p.source, staging_dir, 'dcm2niix')
-            all_series = load_series(staging.staging_dir)
+            all_series, physio_sidecar_paths = load_series(staging.staging_dir)
             guard_log['dcm2niix_version_floor'] = True
 
             # Stage 2
@@ -229,13 +229,9 @@ def main() -> None:
             physio_pairs: dict = {}
             if config.physio:
                 try:
-                    physio_logs = []
-                    for rec in staging.dicom_index.values():
-                        if rec.sop_class_uid == '1.2.840.10008.5.1.4.1.1.66':
-                            for fp in rec.file_paths:
-                                physio_logs.append(parse_physio_dicom(fp))
+                    recordings = discover_native_physio(physio_sidecar_paths)
                     bold_series = [series_map[sn] for sn, role in roles.items() if role == Role.BOLD]
-                    physio_pairs = associate_physio(physio_logs, bold_series)
+                    physio_pairs = associate_native_physio(recordings, bold_series)
                 except Exception as physio_exc:
                     if isinstance(physio_exc, GuardError):
                         raise
@@ -308,12 +304,12 @@ def main() -> None:
 
             # Physio write gate
             if config.physio:
-                for bold_snum, log in physio_pairs.items():
+                for bold_snum, physio_snum in physio_pairs.items():
                     label = labels_dict[bold_snum]
                     run_idx = run_indices[bold_snum]
                     run_prefix = f'sub-{sub}_ses-{ses}_task-{label}_run-{run_idx:02d}'
                     func_dir = bids_root / f'sub-{sub}' / f'ses-{ses}' / 'func'
-                    write_physio(log, run_prefix, func_dir, series_map[bold_snum])
+                    write_physio(physio_snum, staging_dir, run_prefix, func_dir)
 
             # registry_delta from the intermediate may be object with .new_entries or raw dict
             if hasattr(registry_delta, 'new_entries'):

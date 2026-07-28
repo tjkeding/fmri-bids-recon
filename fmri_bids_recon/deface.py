@@ -59,24 +59,28 @@ def assert_deface_tools() -> None:
         raise ToolUnavailableError(msg)
 
 
-def _ensure_fsl_env() -> None:
-    """Ensure FSL binaries are reachable for downstream subprocess calls.
+def _build_fsl_env() -> dict[str, str]:
+    """Return a per-call environment dict with FSL's bin directory reachable.
 
-    When FSLDIR is set, appends $FSLDIR/bin to PATH (if not already
-    present) so that pydeface's internal nipype calls can find flirt
-    without requiring users to source fsl.sh. Also sets FSLOUTPUTTYPE
-    to NIFTI_GZ if not already set.
+    Copies the current process environment and, when FSLDIR is set, appends
+    $FSLDIR/bin to PATH (if not already present) so that pydeface's internal
+    nipype calls can find flirt without requiring users to source fsl.sh.
+    Also sets FSLOUTPUTTYPE to NIFTI_GZ if not already set. Unlike the prior
+    _ensure_fsl_env(), this does NOT mutate os.environ -- the returned dict
+    is scoped to the specific subprocess.run() call it is passed to, with no
+    effect on unrelated later calls in the same process.
     """
-    fsl_dir = os.environ.get("FSLDIR")
-    if not fsl_dir:
-        return
-    fsl_bin = str(Path(fsl_dir) / "bin")
-    current_path = os.environ.get("PATH", "")
-    if fsl_bin not in current_path.split(os.pathsep):
-        os.environ["PATH"] = current_path + os.pathsep + fsl_bin
-        logger.info("Appended %s to PATH for FSL tool access.", fsl_bin)
-    if "FSLOUTPUTTYPE" not in os.environ:
-        os.environ["FSLOUTPUTTYPE"] = "NIFTI_GZ"
+    env = os.environ.copy()
+    fsl_dir = env.get("FSLDIR")
+    if fsl_dir:
+        fsl_bin = str(Path(fsl_dir) / "bin")
+        current_path = env.get("PATH", "")
+        if fsl_bin not in current_path.split(os.pathsep):
+            env["PATH"] = current_path + os.pathsep + fsl_bin
+            logger.info("Appended %s to PATH for FSL tool access (scoped to this call).", fsl_bin)
+        if "FSLOUTPUTTYPE" not in env:
+            env["FSLOUTPUTTYPE"] = "NIFTI_GZ"
+    return env
 
 
 def deface(config: StudyConfig, tool: str = "pydeface") -> list[Path]:
@@ -108,7 +112,7 @@ def deface(config: StudyConfig, tool: str = "pydeface") -> list[Path]:
     if tool not in ("pydeface", "afni_refacer"):
         raise ValueError(f"Unsupported defacing tool: {tool}")
 
-    _ensure_fsl_env()
+    fsl_env = _build_fsl_env()
 
     output_paths: list[Path] = []
 
@@ -144,6 +148,7 @@ def deface(config: StudyConfig, tool: str = "pydeface") -> list[Path]:
                 subprocess.run(
                     ["pydeface", str(input_path), "--outfile", str(output_path)],
                     check=True,
+                    env=fsl_env,
                 )
             elif tool == "afni_refacer":
                 subprocess.run(
@@ -154,6 +159,7 @@ def deface(config: StudyConfig, tool: str = "pydeface") -> list[Path]:
                         "-prefix", str(output_path),
                     ],
                     check=True,
+                    env=fsl_env,
                 )
 
             if output_path.exists():
