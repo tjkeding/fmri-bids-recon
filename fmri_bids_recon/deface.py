@@ -8,6 +8,7 @@ are never modified.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,20 +19,64 @@ from .errors import ToolUnavailableError
 logger = logging.getLogger(__name__)
 
 
-def assert_deface_tools() -> None:
-    """Pre-flight: verify pydeface and FSL flirt are on PATH.
+def _resolve_flirt() -> str | None:
+    """Return an absolute path to the flirt binary, or None if not found.
 
-    Called at pipeline startup when config.deface is True. Raises
-    ToolUnavailableError if either binary is absent, halting the
-    pipeline before any DICOM processing begins.
+    Checks $FSLDIR/bin/flirt first; falls back to shutil.which("flirt").
     """
-    missing = [t for t in ("pydeface", "flirt") if shutil.which(t) is None]
+    fsl_dir = os.environ.get("FSLDIR")
+    if fsl_dir:
+        candidate = Path(fsl_dir) / "bin" / "flirt"
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("flirt")
+
+
+def assert_deface_tools() -> None:
+    """Pre-flight: verify pydeface and FSL flirt are reachable.
+
+    Called at pipeline startup when config.deface is True. Resolves flirt
+    via $FSLDIR/bin/flirt (if the FSLDIR environment variable is set) or
+    PATH lookup. Raises ToolUnavailableError if either binary is absent,
+    halting the pipeline before any DICOM processing begins.
+    """
+    missing: list[str] = []
+    if shutil.which("pydeface") is None:
+        missing.append("pydeface")
+    if _resolve_flirt() is None:
+        missing.append("flirt")
     if missing:
-        raise ToolUnavailableError(
+        msg = (
             f"deface is enabled but required tool(s) not on PATH: "
             f"{', '.join(missing)}. Install the required tools or "
             f"set deface: false in the config."
         )
+        if "flirt" in missing:
+            msg += (
+                " Set the FSLDIR environment variable (e.g. via 'module load FSL')"
+                " or add FSL's bin directory to PATH."
+            )
+        raise ToolUnavailableError(msg)
+
+
+def _ensure_fsl_env() -> None:
+    """Ensure FSL binaries are reachable for downstream subprocess calls.
+
+    When FSLDIR is set, appends $FSLDIR/bin to PATH (if not already
+    present) so that pydeface's internal nipype calls can find flirt
+    without requiring users to source fsl.sh. Also sets FSLOUTPUTTYPE
+    to NIFTI_GZ if not already set.
+    """
+    fsl_dir = os.environ.get("FSLDIR")
+    if not fsl_dir:
+        return
+    fsl_bin = str(Path(fsl_dir) / "bin")
+    current_path = os.environ.get("PATH", "")
+    if fsl_bin not in current_path.split(os.pathsep):
+        os.environ["PATH"] = current_path + os.pathsep + fsl_bin
+        logger.info("Appended %s to PATH for FSL tool access.", fsl_bin)
+    if "FSLOUTPUTTYPE" not in os.environ:
+        os.environ["FSLOUTPUTTYPE"] = "NIFTI_GZ"
 
 
 def deface(config: StudyConfig, tool: str = "pydeface") -> list[Path]:
@@ -62,6 +107,8 @@ def deface(config: StudyConfig, tool: str = "pydeface") -> list[Path]:
     """
     if tool not in ("pydeface", "afni_refacer"):
         raise ValueError(f"Unsupported defacing tool: {tool}")
+
+    _ensure_fsl_env()
 
     output_paths: list[Path] = []
 

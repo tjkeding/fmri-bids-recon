@@ -12,7 +12,7 @@ sandbox/
 RAW_TEST_SUBJ_1/
 
 # Development reports and internal documentation
-bids-recon_*.md
+/bids-recon_*.md
 RUNBOOK.md
 excalidraw.log
 

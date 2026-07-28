@@ -104,8 +104,10 @@ class StudyConfig:
         Whether to extract physiological data.  Defaults to False.
     deface : bool
         Whether to run the defacing stage.  Defaults to False.  Requires
-        ``pydeface`` and FSL ``flirt`` on PATH; the pipeline verifies both
-        at startup when this flag is True.
+        ``pydeface`` (installed via pip) and FSL ``flirt``; the pipeline
+        resolves ``flirt`` via the ``FSLDIR`` environment variable (falling
+        back to PATH lookup) and verifies both tools at startup when this
+        flag is True.
     participants : list[ParticipantEntry]
         Derived. Ordered list of participant/session entries resolved from the
         cross product of subjects x sessions.  Populated by load_config().

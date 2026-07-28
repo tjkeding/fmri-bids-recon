@@ -30,7 +30,7 @@ The pipeline executes seven stages in sequence:
 
 - **conda** (or **mamba**) available on PATH.
 - Outbound network access during one-time environment setup (conda downloads packages from conda-forge and PyPI).
-- **FSL** (any version): required only if the `deface` stage is enabled (`deface: true` in the study config). Specifically, `flirt` must be on PATH. FSL must be installed separately; it is not included in the conda environment.
+- **FSL** (any version): required only if the `deface` stage is enabled (`deface: true` in the study config). The pipeline resolves `flirt` via the `FSLDIR` environment variable (e.g., set by `module load FSL` on HPC clusters), falling back to PATH lookup. FSL must be installed separately; it is not included in the conda environment.
 - No root or `sudo` access is required.
 
 ## Installation
@@ -40,13 +40,13 @@ The pipeline executes seven stages in sequence:
 ```bash
 conda create -n fmri-bids-recon python=3.12 -y
 conda activate fmri-bids-recon
-pip install git+https://github.com/<org>/fmri-bids-recon.git
+pip install git+https://github.com/tjkeding/fmri-bids-recon.git
 ```
 
 ### Option B: local editable install
 
 ```bash
-git clone https://github.com/<org>/fmri-bids-recon.git
+git clone https://github.com/tjkeding/fmri-bids-recon.git
 cd fmri-bids-recon
 conda env create -f environment.yml
 conda activate fmri-bids-recon
@@ -169,7 +169,7 @@ Managed via conda (`environment.yml`):
 | dcm2niix | 1.0.20260416 | DICOM-to-NIfTI conversion |
 | bids-validator-deno | 3.0.0 | BIDS spec compliance validation |
 | cubids | 1.1.0 | Entity/parameter group review |
-| pydeface | 2.1.0 | Anatomical defacing (requires FSL `flirt` on PATH) |
+| pydeface | 2.1.0 | Anatomical defacing (requires FSL `flirt` via `FSLDIR` or PATH) |
 
 ## License
 

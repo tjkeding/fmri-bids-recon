@@ -15,7 +15,7 @@ AI assistance was utilized for **DICOM-to-BIDS reconstruction pipeline developme
 - Code architecture and design (pipeline staging model, guard system, geometry-primary fieldmap association)
 - Statistical methodology review and validation (geometry tolerance calibration, volume-count enforcement, acquisition-signature drift detection)
 - Implementation of pipeline modules (7 pipeline stages, 14 integrity guards, configuration loading, task registry persistence)
-- Test suite development and validation (434 tests covering unit, integration, edge-case, and guard-coverage scenarios)
+- Test suite development and validation (447 tests covering unit, integration, edge-case, and guard-coverage scenarios)
 - Documentation drafting and refinement
 
 AI was **not** used for:
@@ -69,7 +69,7 @@ The researcher maintained full oversight and decision authority throughout the d
 
 - **(c)** Approved all implementation plans (technical specifications) before any code generation was executed. This included the recent package rename from bids-recon to fmri-bids-recon, the creation of pyproject.toml for pip-installable distribution, and the transition from PYTHONPATH invocation to console entry points.
 
-- **(d)** Validated all test results and ensured test coverage aligned with the integrity guarantees required by the pipeline. The 434-test suite was reviewed for assertion strength (no weakened postconditions) and guard-coverage completeness (structural verification via source-file scanning).
+- **(d)** Validated all test results and ensured test coverage aligned with the integrity guarantees required by the pipeline. The 447-test suite was reviewed for assertion strength (no weakened postconditions) and guard-coverage completeness (structural verification via source-file scanning).
 
 - **(e)** Made all domain-specific decisions regarding pipeline architecture, algorithmic choices, and analytical strategy, including: the staging-then-commit execution model, the BIDS derivatives directory naming convention, the exit-code taxonomy, and the scope of each integrity guard.
 
@@ -107,3 +107,4 @@ Raw session transcripts are excluded for privacy reasons. The structured reports
 | 2026-07-22 | 1.1.0 | Configuration ergonomics: renamed dicom_pattern to dicom_template with descriptive {subject}/{session} placeholders; added file-based subject roster input as alternative to inline YAML lists; updated documentation and example config. Test suite expanded from 409 to 418 tests. AID audit trail: 47 development reports. |
 | 2026-07-24 | 1.2.0 | Deface bug fix: added `deface: bool` config toggle (default false) to make defacing opt-in; added `assert_deface_tools()` startup pre-flight check that verifies `pydeface` and FSL `flirt` are on PATH before any DICOM processing begins when `deface: true`; removed soft-degradation FileNotFoundError handler in favor of hard enforcement (both FileNotFoundError and CalledProcessError propagate); gated Phase 5 on `config.deface`; documented FSL as a conditional runtime dependency. Test suite expanded from 418 to 423 tests. AID audit trail: 52 development reports. |
 | 2026-07-24 | 1.3.0 | HPC environment sanitization: added `_sanitize_sys_path()` guard in `__main__.py` that strips foreign-version Python site-packages entries from `sys.path` and `PYTHONPATH` at startup, preventing C-extension crashes caused by HPC module-system contamination (e.g., `module load FSL` injecting Python 3.11 paths into a Python 3.12+ conda environment). Guard is version-aware, not tool-specific, and is a complete no-op in clean environments. Test suite expanded from 423 to 434 tests. AID audit trail: 56 development reports. |
+| 2026-07-28 | 1.4.0 | FSLDIR-based FSL tool resolution: `deface.py` now resolves `flirt` via the `FSLDIR` environment variable (falling back to PATH lookup), eliminating the circular PATH conflict between conda and FSL on HPC clusters. Added `_resolve_flirt()` for FSLDIR-first resolution, `_ensure_fsl_env()` to prepare PATH and `FSLOUTPUTTYPE` before subprocess calls, and updated `assert_deface_tools()` pre-flight check with FSLDIR-aware hints. Documentation updates: RUNBOOK.md Section 7 (HPC Deployment with install/run/contamination-guard guidance), README.md and INPUT_SPECIFICATION.md FSL references updated to FSLDIR resolution, `.gitignore` root-only pattern fix, stale `dicom_pattern` reference corrected to `dicom_template`, GitHub URL placeholders resolved. Test suite expanded from 434 to 447 tests. AID audit trail: 61 development reports. |

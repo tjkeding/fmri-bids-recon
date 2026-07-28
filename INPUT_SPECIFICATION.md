@@ -24,7 +24,7 @@ The pipeline accepts a single positional argument: the absolute path to a YAML c
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `physio` | boolean | `false` | Enable physiological data extraction (Siemens PMU DICOM parsing, temporal association, BIDS export). |
-| `deface` | boolean | `false` | Enable anatomical defacing via pydeface. When true, the pipeline verifies that both `pydeface` and FSL `flirt` are on PATH at startup (pre-flight check) and halts immediately if either is absent. Defaced copies are written to `derivatives/defaced/`; the analysis `anat/` directories are never modified. |
+| `deface` | boolean | `false` | Enable anatomical defacing via pydeface. When true, the pipeline resolves `flirt` via the `FSLDIR` environment variable (falling back to PATH lookup) and verifies both `pydeface` and `flirt` at startup. Halts immediately if either is absent. Defaced copies are written to `derivatives/defaced/`; the analysis `anat/` directories are never modified. |
 
 ### 1.3 Derived Fields (populated by `load_config()`)
 
@@ -122,7 +122,7 @@ All dependencies are installable via pip (declared in `pyproject.toml`):
 | numpy | 1.26.4 | Array operations |
 | pyyaml | 6.0.2 | YAML configuration loading |
 | cubids | 1.1.0 | Entity/parameter group review artifact |
-| pydeface | 2.1.0 | Anatomical defacing (requires FSL `flirt` at runtime) |
+| pydeface | 2.1.0 | Anatomical defacing (requires FSL `flirt` via `FSLDIR` or PATH) |
 | dcm2niix | 1.0.20260416 | DICOM-to-NIfTI conversion (pip wheel bundles the binary) |
 | bids-validator-deno | 3.0.0 | BIDS spec compliance validation (pip wheel bundles the Deno runtime) |
 
@@ -132,7 +132,7 @@ All dependencies are installable via pip (declared in `pyproject.toml`):
 |------|--------------|-------------|-------|
 | dcm2niix | 1.0.20260416 | Hard (guard: `dcm2niix_version_floor`). Pipeline refuses to run if the version is below the floor. | Installed via pip wheel; no separate installation required. |
 | bids-validator-deno | 3.0.0 | Soft (exit code 4 if unavailable). Dataset is written but UNCHECKED. | Installed via pip wheel. |
-| FSL `flirt` | any | Hard when `deface: true` (pre-flight check halts pipeline); stage skipped when `deface: false` (default). | Required only when the deface stage is enabled. Must be installed separately. |
+| FSL `flirt` | any | Hard when `deface: true` (pre-flight check halts pipeline); stage skipped when `deface: false` (default). | Required only when the deface stage is enabled. Must be installed separately. Resolved via the `FSLDIR` environment variable (e.g., `module load FSL`), with PATH fallback. |
 | cubids | 1.1.0 | Soft (CUBIDs report skipped if unavailable). | Installed via pip. |
 
 ### 3.4 Conda Environment
@@ -201,4 +201,4 @@ The pipeline writes the following directory tree under `bids_root`:
 1. **Single-site assumption**: the classifier and geometry tolerances are validated against Siemens XA30 DICOM output. Other scanner vendors or software versions may produce sidecar fields that the classifier does not recognize.
 2. **No incremental fieldmap re-pairing**: if new sessions are added after the initial run, fieldmap pairs are computed independently per session. Cross-session fieldmap sharing is not supported.
 3. **Physiological data restricted to Siemens PMU format**: other physiological recording formats (BIOPAC, BrainVision) are not parsed.
-4. **Defacing requires FSL**: the `pydeface` package is a Python wrapper around FSL's `flirt`. When `deface: true` is set in the study config, the pipeline verifies that both `pydeface` and `flirt` are on PATH at startup and halts immediately if either is absent.
+4. **Defacing requires FSL**: the `pydeface` package is a Python wrapper around FSL's `flirt`. When `deface: true` is set in the study config, the pipeline resolves `flirt` via the `FSLDIR` environment variable (falling back to PATH lookup) and verifies both tools at startup. On HPC clusters using environment modules, `module load FSL` sets `FSLDIR`; no additional PATH manipulation or `source fsl.sh` is required.
