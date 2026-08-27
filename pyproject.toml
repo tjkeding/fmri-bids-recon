@@ -27,6 +27,9 @@ version = {attr = "fmri_bids_recon.__version__"}
 [tool.setuptools.packages.find]
 include = ["fmri_bids_recon*"]
 
+[tool.setuptools.package-data]
+fmri_bids_recon = ["tools.lock.yaml"]
+
 [tool.pytest.ini_options]
 markers = [
     "level0_unit: Pure-function unit tests",

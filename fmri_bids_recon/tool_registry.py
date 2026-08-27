@@ -43,7 +43,7 @@ class ToolReport:
 
 
 def _default_lockfile_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "tools.lock.yaml"
+    return Path(__file__).resolve().parent / "tools.lock.yaml"
 
 
 def _load_lockfile(path: Path) -> dict:
