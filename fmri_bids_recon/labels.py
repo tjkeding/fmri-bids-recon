@@ -13,7 +13,7 @@ from datetime import date
 
 from .config import TaskRegistryEntry
 from .errors import EmptyLabelError, LabelCollisionError, LabelDriftError, TaskRenameError
-from .sidecar import Series
+from .sidecar import Series, description_stem
 from .stage2_classify import Role
 
 
@@ -35,8 +35,6 @@ BIDS_STOP_WORDS: frozenset[str] = frozenset({
 
 _RE_SPLIT = re.compile(r"[_\-\s]+")
 _RE_ALPHANUM = re.compile(r"[^a-z0-9]")
-_SBREF_SUFFIX_RE = re.compile(r"[_\s]*sbref\s*$", re.IGNORECASE)
-
 
 # ---------------------------------------------------------------------------
 # Prefix derivation
@@ -299,7 +297,8 @@ def resolve_labels(
             frozen_label = registry[desc].label
 
             # Drift guard: re-derive and compare against the frozen value
-            re_derived = derive_task_label(desc, prefix)
+            stored_prefix = registry[desc].prefix if registry[desc].prefix is not None else prefix
+            re_derived = derive_task_label(desc, stored_prefix)
             if re_derived != frozen_label:
                 raise LabelDriftError(
                     f"SeriesDescription '{desc}' re-derives to label '{re_derived}' "
@@ -325,6 +324,7 @@ def resolve_labels(
                 expected_volumes=None,
                 first_seen=date.today().isoformat(),
                 signature=next(iter(new_sigs)) if new_sigs else None,
+                prefix=prefix,
             )
 
             # Rename check: compare against the persisted registry
@@ -373,7 +373,7 @@ def resolve_labels(
 
     for label, descs in label_to_descs.items():
         if len(descs) > 1:
-            stems = {_SBREF_SUFFIX_RE.sub("", d).lower().strip() for d in descs}
+            stems = {description_stem(d) for d in descs}
             if len(stems) > 1:
                 raise LabelCollisionError(
                     f"Task label '{label}' is claimed by {len(descs)} distinct "

@@ -15,11 +15,10 @@ from pathlib import Path as PathLib
 
 from .sidecar import Series
 from .stage2_classify import Role
-from .stage3_map import Mapping, FieldmapPair
+from .stage3_map import Mapping, FieldmapUnit, GREFieldmapSet
 from .runs import Excluded
 from .labels import RegistryDelta
 from .config import TaskRegistryEntry
-from .errors import ReviewFlag
 
 # ---------------------------------------------------------------------------
 # Encoding
@@ -27,7 +26,8 @@ from .errors import ReviewFlag
 
 _DATACLASS_TYPES = (
     Series,
-    FieldmapPair,
+    FieldmapUnit,
+    GREFieldmapSet,
     Mapping,
     Excluded,
     RegistryDelta,
@@ -37,16 +37,6 @@ _DATACLASS_TYPES = (
 
 def _encode(obj):
     """Recursively encode *obj* into a JSON-serialisable structure."""
-    # ReviewFlag (Exception subclass) — check before dataclass test
-    if isinstance(obj, ReviewFlag):
-        return {
-            "__type__": "ReviewFlag",
-            "f": {
-                "message": str(obj),
-                "context": _encode(obj.context),
-            },
-        }
-
     # Known dataclasses — check before dict, since dataclasses are not dicts
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return {
@@ -128,10 +118,6 @@ def _decode(obj):
 
         if tag == "int_key_dict":
             return {int(k): _decode(v) for k, v in obj["v"].items()}
-
-        if tag == "ReviewFlag":
-            rf = ReviewFlag(obj["f"]["message"], context=_decode(obj["f"]["context"]))
-            return rf
 
         if tag in _DATACLASS_MAP:
             cls = _DATACLASS_MAP[tag]

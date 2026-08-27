@@ -79,6 +79,7 @@ def convert_to_staging(
 
     # Invoke dcm2niix.
     # -ba n : do NOT anonymize BIDS sidecars (preserves all keys the engine needs)
+    # -i  y : ignore derived/localizer/single-slice images
     # -b  y : write BIDS JSON sidecars
     # -z  y : compress NIfTI output with gzip
     # -f '%s_%d' : filename pattern: SeriesNumber_SeriesDescription
@@ -86,6 +87,7 @@ def convert_to_staging(
     cmd = [
         dcm2niix,
         "-ba", "n",
+        "-i", "y",
         "-b", "y",
         "-z", "y",
         "-f", "%s_%d",

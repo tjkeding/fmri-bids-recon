@@ -61,6 +61,7 @@ Each registry entry contains:
 | `expected_volumes` | integer or null | Expected BOLD volume count for this task. Null if not yet established. |
 | `first_seen` | string (ISO-8601 date) | Date of first acquisition for this label (YYYY-MM-DD). |
 | `signature` | list or null | Acquisition fingerprint: `[repetition_time, effective_echo_spacing, multiband_factor, [matrix_dims]]`. Null for legacy entries. |
+| `prefix` | list or null | Label-derivation prefix in force at registration time (persisted as a list, reconstructed as a tuple on load). Used by the `no_label_drift` guard to re-derive a registered label against the session that registered it, rather than the current session's prefix. Null for entries registered before prefix persistence was introduced. |
 
 ---
 

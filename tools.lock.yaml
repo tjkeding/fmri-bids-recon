@@ -1,0 +1,21 @@
+lockfile_version: "1.0.0"
+python: "3.12.13"
+binaries:
+  dcm2niix:
+    pin_class: A
+    version: "1.0.20260416"
+    binary: dcm2niix
+    version_flag: "--version"
+  pydeface:
+    pin_class: B
+    version: "2.1.0"
+    binary: pydeface
+    version_flag: "--version"
+    conditional: deface
+  flirt:
+    pin_class: A
+    version: "6.0.7.15"
+    binary: flirt
+    version_flag: "-version"
+    conditional: deface
+    enforcement: declarative

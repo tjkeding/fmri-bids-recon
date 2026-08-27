@@ -2,7 +2,6 @@
 
 BidsReconError
     GuardError  (BLOCKING)
-        VersionFloorError
         AnatSuffixError
         PhaseEncodingError
         FieldmapCoverageError
@@ -16,7 +15,7 @@ BidsReconError
         NavigatorDropError
     ConfigError
     ToolUnavailableError
-    ReviewFlag  (non-blocking, collected only)
+    ToolVersionError
 SpecFinding  (dataclass, not an exception)
 """
 
@@ -45,10 +44,6 @@ class GuardError(BidsReconError):
     Raising a GuardError halts pipeline execution for the affected subject/run.
     All subclasses accept a context dict as their primary argument.
     """
-
-
-class VersionFloorError(GuardError):
-    """dcm2niix version is below the verified minimum floor."""
 
 
 class AnatSuffixError(GuardError):
@@ -109,12 +104,8 @@ class ToolUnavailableError(BidsReconError):
     """
 
 
-class ReviewFlag(BidsReconError):
-    """NON-blocking advisory flag.
-
-    ReviewFlags are collected and reported but never raised as exceptions
-    during normal pipeline execution.
-    """
+class ToolVersionError(BidsReconError):
+    """Installed tool version does not match the pinned version in tools.lock.yaml."""
 
 
 @dataclass

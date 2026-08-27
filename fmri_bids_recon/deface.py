@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -17,46 +16,6 @@ from .config import StudyConfig
 from .errors import ToolUnavailableError
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_flirt() -> str | None:
-    """Return an absolute path to the flirt binary, or None if not found.
-
-    Checks $FSLDIR/bin/flirt first; falls back to shutil.which("flirt").
-    """
-    fsl_dir = os.environ.get("FSLDIR")
-    if fsl_dir:
-        candidate = Path(fsl_dir) / "bin" / "flirt"
-        if candidate.is_file():
-            return str(candidate)
-    return shutil.which("flirt")
-
-
-def assert_deface_tools() -> None:
-    """Pre-flight: verify pydeface and FSL flirt are reachable.
-
-    Called at pipeline startup when config.deface is True. Resolves flirt
-    via $FSLDIR/bin/flirt (if the FSLDIR environment variable is set) or
-    PATH lookup. Raises ToolUnavailableError if either binary is absent,
-    halting the pipeline before any DICOM processing begins.
-    """
-    missing: list[str] = []
-    if shutil.which("pydeface") is None:
-        missing.append("pydeface")
-    if _resolve_flirt() is None:
-        missing.append("flirt")
-    if missing:
-        msg = (
-            f"deface is enabled but required tool(s) not on PATH: "
-            f"{', '.join(missing)}. Install the required tools or "
-            f"set deface: false in the config."
-        )
-        if "flirt" in missing:
-            msg += (
-                " Set the FSLDIR environment variable (e.g. via 'module load FSL')"
-                " or add FSL's bin directory to PATH."
-            )
-        raise ToolUnavailableError(msg)
 
 
 def _build_fsl_env() -> dict[str, str]:
@@ -108,6 +67,9 @@ def deface(config: StudyConfig, tool: str = "pydeface") -> list[Path]:
     ------
     ValueError
         If ``tool`` is not one of the supported values.
+    ToolUnavailableError
+        If the defacing tool binary is absent or exits non-zero. The
+        original exception is preserved via the exception cause chain.
     """
     if tool not in ("pydeface", "afni_refacer"):
         raise ValueError(f"Unsupported defacing tool: {tool}")
@@ -144,23 +106,42 @@ def deface(config: StudyConfig, tool: str = "pydeface") -> list[Path]:
 
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            if tool == "pydeface":
-                subprocess.run(
-                    ["pydeface", str(input_path), "--outfile", str(output_path)],
-                    check=True,
-                    env=fsl_env,
-                )
-            elif tool == "afni_refacer":
-                subprocess.run(
-                    [
-                        "@afni_refacer_run",
-                        "-input", str(input_path),
-                        "-mode_deface",
-                        "-prefix", str(output_path),
-                    ],
-                    check=True,
-                    env=fsl_env,
-                )
+            try:
+                if tool == "pydeface":
+                    subprocess.run(
+                        ["pydeface", str(input_path), "--outfile", str(output_path)],
+                        check=True,
+                        env=fsl_env,
+                    )
+                elif tool == "afni_refacer":
+                    subprocess.run(
+                        [
+                            "@afni_refacer_run",
+                            "-input", str(input_path),
+                            "-mode_deface",
+                            "-prefix", str(output_path),
+                        ],
+                        check=True,
+                        env=fsl_env,
+                    )
+            except subprocess.CalledProcessError as exc:
+                raise ToolUnavailableError(
+                    f"Defacing tool '{tool}' failed on {input_path.name}: "
+                    f"exit code {exc.returncode}",
+                    context={
+                        "tool": tool,
+                        "input_path": str(input_path),
+                        "returncode": exc.returncode,
+                    },
+                ) from exc
+            except FileNotFoundError as exc:
+                raise ToolUnavailableError(
+                    f"Defacing tool '{tool}' binary not found: {exc}",
+                    context={
+                        "tool": tool,
+                        "input_path": str(input_path),
+                    },
+                ) from exc
 
             if output_path.exists():
                 output_paths.append(output_path)

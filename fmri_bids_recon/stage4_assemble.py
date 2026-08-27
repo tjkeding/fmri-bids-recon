@@ -8,19 +8,22 @@ to sourcedata/, and upserts dataset-level TSV manifests.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .sidecar import Series, _parse_acquisition_datetime
+_logger = logging.getLogger(__name__)
+
+from .sidecar import Series, _parse_acquisition_datetime, nifti_stem
 from .stage2_classify import Role
-from .stage3_map import Mapping, FieldmapPair, PE_DIRECTION_TO_LABEL  # noqa: F401
+from .stage3_map import Mapping, FieldmapUnit, GREFieldmapSet, PE_DIRECTION_TO_LABEL
 from .config import StudyConfig, ParticipantEntry
 from .runs import Excluded
-from .labels import RegistryDelta  # noqa: F401
 from .tsv import upsert_tsv
-from .errors import ReviewFlag, PhaseEncodingError
+from .errors import PhaseEncodingError, GuardError
+from .warnings import graded_warning, SEVERITY_HIGH
 
 
 # ---------------------------------------------------------------------------
@@ -40,8 +43,8 @@ class AssemblyResult:
         Absolute paths to all files written under ``sourcedata_root``.
     demographics : dict
         Non-PHI demographic summary (sex, age, wave).
-    review_flags : list[ReviewFlag]
-        Non-blocking advisory flags raised during assembly.
+    review_flags : list[dict]
+        Graded warning dicts with keys: severity, code, message.
     patient_id_warnings : list[str]
         Warnings about PatientID inconsistencies (counts only, no values).
     """
@@ -49,23 +52,13 @@ class AssemblyResult:
     bids_files: list[Path] = field(default_factory=list)
     sourcedata_files: list[Path] = field(default_factory=list)
     demographics: dict = field(default_factory=dict)
-    review_flags: list[ReviewFlag] = field(default_factory=list)
+    review_flags: list[dict] = field(default_factory=list)
     patient_id_warnings: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _nifti_filestem(nifti_path: Path) -> str:
-    """Return the bare stem of *nifti_path* with both .nii and .gz removed."""
-    name = nifti_path.name
-    if name.endswith(".nii.gz"):
-        return name[:-7]
-    if name.endswith(".nii"):
-        return name[:-4]
-    return nifti_path.stem
 
 
 def _normalize_acq_time(raw: dict) -> str:
@@ -133,6 +126,8 @@ def assemble(
     config: StudyConfig,
     participant: ParticipantEntry,
     staging_dir: Path,
+    gre_sets: list[GREFieldmapSet],
+    unpaired_fmaps: list[Series],
 ) -> AssemblyResult:
     """Assemble BIDS outputs for one participant/session.
 
@@ -166,6 +161,13 @@ def assemble(
     staging_dir : Path
         dcm2niix staging directory (informational; NIfTI paths are taken
         from ``series.nifti_path``).
+    gre_sets : list[GREFieldmapSet]
+        GRE (gradient-echo) fieldmap sets from stage3_map.group_gre_fieldmaps /
+        map_gre_fieldmaps, with targets already assigned.
+    unpaired_fmaps : list[Series]
+        SE-EPI fieldmap series that could not be paired (absent PE direction
+        or odd-count remainder; CR F3/F7), from
+        ``mapping.unpaired_fmaps``. Routed to sourcedata/unpaired_fmap.
 
     Returns
     -------
@@ -180,17 +182,52 @@ def assemble(
 
     bids_files: list[Path] = []
     sourcedata_files: list[Path] = []
-    review_flags: list[ReviewFlag] = []
+    review_flags: list[dict] = []
     scans_rows: list[dict] = []
 
     # sourcedata base for this participant/session
     sd_base = config.sourcedata_root / f"sub-{sub}" / f"ses-{ses}"
 
-    # Build reverse lookup: series_number -> (FieldmapPair, member 'a' or 'b')
-    fmap_pair_lookup: dict[int, tuple[FieldmapPair, str]] = {}
-    for pair in mapping.pairs:
-        fmap_pair_lookup[pair.member_a.series_number] = (pair, "a")
-        fmap_pair_lookup[pair.member_b.series_number] = (pair, "b")
+    # Build reverse lookup: series_number -> (FieldmapUnit, member index)
+    fmap_unit_lookup: dict[int, tuple[FieldmapUnit, int]] = {}
+    for unit in mapping.units:
+        for member_idx, member in enumerate(unit.members):
+            fmap_unit_lookup[member.series_number] = (unit, member_idx)
+
+    unpaired_sns: set[int] = {s.series_number for s in unpaired_fmaps}
+
+    def _emit_series(series, subdir, stem, *, json_data=None, companions=()):
+        """Write one series' NIfTI + JSON (+ optional companions) into the BIDS tree.
+
+        Shared epilogue for every per-role emission site: creates ``subdir``,
+        copies the NIfTI, writes the JSON sidecar (``series.raw`` unless
+        ``json_data`` overrides it), copies any ``companions`` extensions
+        (e.g. ``.bval``/``.bvec``) that exist alongside the source NIfTI, and
+        records the output in ``bids_files``, ``mapping.bids_relative_paths``,
+        and ``scans_rows``. Per-role guards (phase-encoding validation,
+        fieldmap unit lookup) run in the caller before this is invoked.
+        """
+        subdir.mkdir(parents=True, exist_ok=True)
+        dest = subdir / f"{stem}.nii.gz"
+        _copy_nifti(series, dest)
+        _write_json(subdir / f"{stem}.json",
+                    json_data if json_data is not None else series.raw)
+        for ext in companions:
+            src = series.nifti_path.parent / (nifti_stem(series.nifti_path) + ext)
+            if src.exists():
+                shutil.copy2(src, subdir / (stem + ext))
+        bids_files.append(dest)
+        mapping.bids_relative_paths[series.series_number] = (
+            dest.relative_to(sub_dir).as_posix()
+        )
+        scans_rows.append({
+            "filename": str(dest.relative_to(ses_dir)),
+            "acq_time": _normalize_acq_time(series.raw),
+        })
+
+    def _write_gre_output(series, suffix, run_idx):
+        _emit_series(series, ses_dir / "fmap",
+                     f"sub-{sub}_ses-{ses}_run-{run_idx:02d}_{suffix}")
 
     # ------------------------------------------------------------------
     # Acquisition-order helpers for run-index disambiguation
@@ -236,172 +273,122 @@ def assemble(
         series = series_map[snum]
 
         if role == Role.T1W:
-            anat_dir = ses_dir / "anat"
-            anat_dir.mkdir(parents=True, exist_ok=True)
             run_idx = anat_run_index[snum]
-            stem = f"sub-{sub}_ses-{ses}_run-{run_idx:02d}_T1w"
-            dest = anat_dir / f"{stem}.nii.gz"
-            _copy_nifti(series, dest)
-            _write_json(anat_dir / f"{stem}.json", series.raw)
-            bids_files.append(dest)
-            mapping.bids_relative_paths[snum] = dest.relative_to(sub_dir).as_posix()
-            scans_rows.append({
-                "filename": str(dest.relative_to(ses_dir)),
-                "acq_time": _normalize_acq_time(series.raw),
-            })
+            _emit_series(series, ses_dir / "anat",
+                         f"sub-{sub}_ses-{ses}_run-{run_idx:02d}_T1w")
 
         elif role == Role.T2W:
-            anat_dir = ses_dir / "anat"
-            anat_dir.mkdir(parents=True, exist_ok=True)
             run_idx = anat_run_index[snum]
-            stem = f"sub-{sub}_ses-{ses}_run-{run_idx:02d}_T2w"
-            dest = anat_dir / f"{stem}.nii.gz"
-            _copy_nifti(series, dest)
-            _write_json(anat_dir / f"{stem}.json", series.raw)
-            bids_files.append(dest)
-            mapping.bids_relative_paths[snum] = dest.relative_to(sub_dir).as_posix()
-            scans_rows.append({
-                "filename": str(dest.relative_to(ses_dir)),
-                "acq_time": _normalize_acq_time(series.raw),
-            })
+            _emit_series(series, ses_dir / "anat",
+                         f"sub-{sub}_ses-{ses}_run-{run_idx:02d}_T2w")
 
         elif role == Role.BOLD:
-            func_dir = ses_dir / "func"
-            func_dir.mkdir(parents=True, exist_ok=True)
             task_label = labels[snum]
             run_idx = run_indices[snum]
-            stem = f"sub-{sub}_ses-{ses}_task-{task_label}_run-{run_idx:02d}_bold"
-            dest = func_dir / f"{stem}.nii.gz"
-            _copy_nifti(series, dest)
             data = dict(series.raw)
             data["TaskName"] = labels[snum]
-            _write_json(func_dir / f"{stem}.json", data)
-            bids_files.append(dest)
-            mapping.bids_relative_paths[snum] = dest.relative_to(sub_dir).as_posix()
-            scans_rows.append({
-                "filename": str(dest.relative_to(ses_dir)),
-                "acq_time": _normalize_acq_time(series.raw),
-            })
+            _emit_series(series, ses_dir / "func",
+                         f"sub-{sub}_ses-{ses}_task-{task_label}_run-{run_idx:02d}_bold",
+                         json_data=data)
 
         elif role == Role.SBREF:
-            func_dir = ses_dir / "func"
-            func_dir.mkdir(parents=True, exist_ok=True)
             task_label = labels[snum]
-            # Derive run index from the parent BOLD: next chronological BOLD with same task label
             sbref_key = _acq_sort_key(snum)
             bold_snums_same_task = sorted(
-                [sn for sn, r in roles.items() if r == Role.BOLD and labels.get(sn) == task_label],
+                [sn for sn, r in roles.items()
+                 if r == Role.BOLD and labels.get(sn) == task_label],
                 key=_acq_sort_key,
             )
             parent_bold_snum = next(
-                (sn for sn in bold_snums_same_task if _acq_sort_key(sn) > sbref_key),
+                (sn for sn in bold_snums_same_task
+                 if _acq_sort_key(sn) > sbref_key),
                 bold_snums_same_task[0] if bold_snums_same_task else None,
             )
-            run_idx = run_indices[parent_bold_snum] if parent_bold_snum is not None else 1
-            stem = f"sub-{sub}_ses-{ses}_task-{task_label}_run-{run_idx:02d}_sbref"
-            dest = func_dir / f"{stem}.nii.gz"
-            _copy_nifti(series, dest)
+            run_idx = (run_indices[parent_bold_snum]
+                       if parent_bold_snum is not None else 1)
             data = dict(series.raw)
             data["TaskName"] = labels[snum]
-            _write_json(func_dir / f"{stem}.json", data)
-            bids_files.append(dest)
-            mapping.bids_relative_paths[snum] = dest.relative_to(sub_dir).as_posix()
-            scans_rows.append({
-                "filename": str(dest.relative_to(ses_dir)),
-                "acq_time": _normalize_acq_time(series.raw),
-            })
+            _emit_series(series, ses_dir / "func",
+                         f"sub-{sub}_ses-{ses}_task-{task_label}_run-{run_idx:02d}_sbref",
+                         json_data=data)
 
         elif role == Role.DWI:
-            dwi_dir = ses_dir / "dwi"
-            dwi_dir.mkdir(parents=True, exist_ok=True)
             dir_label = PE_DIRECTION_TO_LABEL.get(series.phase_encoding_direction or "")
             if dir_label is None:
                 raise PhaseEncodingError(
                     f"Diffusion series {snum} has phase-encoding direction "
-                    f"{series.phase_encoding_direction!r}, which does not map to a "
-                    f"known BIDS dir- label; refusing to emit dir-UNK.",
+                    f"{series.phase_encoding_direction!r}, which does not "
+                    f"map to a known BIDS dir- label; refusing to emit "
+                    f"dir-UNK.",
                     context={
                         "series_number": snum,
-                        "phase_encoding_direction": series.phase_encoding_direction,
+                        "phase_encoding_direction":
+                            series.phase_encoding_direction,
                         "role": role.name,
                     },
                 )
             run_idx = dwi_run_index[snum]
-            stem = f"sub-{sub}_ses-{ses}_dir-{dir_label}_run-{run_idx:02d}_dwi"
-            dest = dwi_dir / f"{stem}.nii.gz"
-            _copy_nifti(series, dest)
-            _write_json(dwi_dir / f"{stem}.json", series.raw)
-            # Copy companion .bval / .bvec if present
-            src_stem = _nifti_filestem(series.nifti_path)
-            for ext in (".bval", ".bvec"):
-                src = series.nifti_path.parent / (src_stem + ext)
-                if src.exists():
-                    shutil.copy2(src, dwi_dir / (stem + ext))
-            bids_files.append(dest)
-            mapping.bids_relative_paths[snum] = dest.relative_to(sub_dir).as_posix()
-            scans_rows.append({
-                "filename": str(dest.relative_to(ses_dir)),
-                "acq_time": _normalize_acq_time(series.raw),
-            })
+            _emit_series(
+                series, ses_dir / "dwi",
+                f"sub-{sub}_ses-{ses}_dir-{dir_label}_run-{run_idx:02d}_dwi",
+                companions=(".bval", ".bvec"),
+            )
 
         elif role == Role.DWI_SBREF:
-            dwi_dir = ses_dir / "dwi"
-            dwi_dir.mkdir(parents=True, exist_ok=True)
             dir_label = PE_DIRECTION_TO_LABEL.get(series.phase_encoding_direction or "")
             if dir_label is None:
                 raise PhaseEncodingError(
                     f"Diffusion series {snum} has phase-encoding direction "
-                    f"{series.phase_encoding_direction!r}, which does not map to a "
-                    f"known BIDS dir- label; refusing to emit dir-UNK.",
+                    f"{series.phase_encoding_direction!r}, which does not "
+                    f"map to a known BIDS dir- label; refusing to emit "
+                    f"dir-UNK.",
                     context={
                         "series_number": snum,
-                        "phase_encoding_direction": series.phase_encoding_direction,
+                        "phase_encoding_direction":
+                            series.phase_encoding_direction,
                         "role": role.name,
                     },
                 )
             run_idx = dwi_run_index.get(snum, 1)
-            stem = f"sub-{sub}_ses-{ses}_dir-{dir_label}_run-{run_idx:02d}_sbref"
-            dest = dwi_dir / f"{stem}.nii.gz"
-            _copy_nifti(series, dest)
-            _write_json(dwi_dir / f"{stem}.json", series.raw)
-            bids_files.append(dest)
-            mapping.bids_relative_paths[snum] = dest.relative_to(sub_dir).as_posix()
-            scans_rows.append({
-                "filename": str(dest.relative_to(ses_dir)),
-                "acq_time": _normalize_acq_time(series.raw),
-            })
+            _emit_series(
+                series, ses_dir / "dwi",
+                f"sub-{sub}_ses-{ses}_dir-{dir_label}_run-{run_idx:02d}_sbref",
+            )
 
         elif role in (Role.FMAP_FUNC, Role.FMAP_DWI):
-            if snum not in fmap_pair_lookup:
+            if snum not in fmap_unit_lookup:
+                if snum in unpaired_sns:
+                    continue
+                raise GuardError(
+                    f"Fieldmap series {snum} (role={role.name}) is absent from "
+                    f"both the paired-unit lookup and the unpaired-fieldmap "
+                    f"list; this indicates a wiring defect in the grouping "
+                    f"stage.",
+                    context={
+                        "guard": "fieldmap_pair_complete",
+                        "series_number": snum,
+                        "role": role.name,
+                    },
+                )
+            unit, member_idx = fmap_unit_lookup[snum]
+            if unit.mode == "single":
+                # Structurally supported by FieldmapUnit but not currently
+                # produced by group_fieldmaps(); route defensively rather
+                # than emit a malformed dir- entity from a lone member.
                 sd_dest = sd_base / "unpaired_fmap" / series.nifti_path.name
                 sd_dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(series.nifti_path, sd_dest)
                 sourcedata_files.append(sd_dest)
-                review_flags.append(ReviewFlag(
-                    f"sub-{sub} ses-{ses}: fieldmap series {snum} has no validated pair; "
-                    f"preserved under sourcedata/unpaired_fmap and not placed in fmap/.",
-                    {"code": "unpaired_fieldmap"},
-                ))
                 continue
-            pair, member = fmap_pair_lookup[snum]
             fmap_dir = ses_dir / "fmap"
-            fmap_dir.mkdir(parents=True, exist_ok=True)
             acq = "func" if role == Role.FMAP_FUNC else "dwi"
-            dir_label = pair.dir_a if member == "a" else pair.dir_b
-            run_idx = pair.run_index
-            stem = (
+            dir_label = PE_DIRECTION_TO_LABEL[unit.dir_labels[member_idx]]
+            run_idx = unit.run_index
+            _emit_series(
+                series, fmap_dir,
                 f"sub-{sub}_ses-{ses}_acq-{acq}_dir-{dir_label}"
-                f"_run-{run_idx:02d}_epi"
+                f"_run-{run_idx:02d}_epi",
             )
-            dest = fmap_dir / f"{stem}.nii.gz"
-            _copy_nifti(series, dest)
-            _write_json(fmap_dir / f"{stem}.json", series.raw)
-            bids_files.append(dest)
-            mapping.bids_relative_paths[snum] = dest.relative_to(sub_dir).as_posix()
-            scans_rows.append({
-                "filename": str(dest.relative_to(ses_dir)),
-                "acq_time": _normalize_acq_time(series.raw),
-            })
 
         elif role in (Role.DROP_ANAT_ND_T1W, Role.DROP_ANAT_ND_T2W):
             # ND anatomical twin: copy NIfTI to sourcedata/dropped
@@ -412,6 +399,8 @@ def assemble(
 
         # Role.DROP_DERIVED, DROP_SCOUT, DROP_NAVIGATOR: silently discarded.
         # Role.UNCLASSIFIED: handled below via the dedicated `unclassified` list.
+        # Role.FMAP_GRE_PHASE, FMAP_GRE_MAG: handled set-wise by the dedicated
+        # GRE fieldmap assembly block below, not per-series.
 
     # ------------------------------------------------------------------
     # Excluded runs -> sourcedata/excluded
@@ -430,6 +419,48 @@ def assemble(
         sd_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(s.nifti_path, sd_dest)
         sourcedata_files.append(sd_dest)
+
+    # ------------------------------------------------------------------
+    # Unpaired SE-EPI fieldmaps -> sourcedata/unpaired_fmap (CR F3, CR F7)
+    # ------------------------------------------------------------------
+    for s in unpaired_fmaps:
+        sd_dest = sd_base / "unpaired_fmap" / s.nifti_path.name
+        sd_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(s.nifti_path, sd_dest)
+        sourcedata_files.append(sd_dest)
+
+    # ------------------------------------------------------------------
+    # GRE fieldmap assembly (BIDS Cases 1-3; CR F5)
+    # ------------------------------------------------------------------
+    for gs in gre_sets:
+        if gs.bids_case == 0:
+            # Indeterminate: route all series to sourcedata/unclassified.
+            for s in (*gs.phase_series, *gs.magnitude_series):
+                sd_dest = sd_base / "unclassified" / s.nifti_path.name
+                sd_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(s.nifti_path, sd_dest)
+                sourcedata_files.append(sd_dest)
+            continue
+
+        if gs.bids_case == 1:
+            _write_gre_output(gs.phase_series[0], "phasediff", gs.run_index)
+            if len(gs.magnitude_series) >= 1:
+                _write_gre_output(gs.magnitude_series[0], "magnitude1", gs.run_index)
+            if len(gs.magnitude_series) >= 2:
+                _write_gre_output(gs.magnitude_series[1], "magnitude2", gs.run_index)
+
+        elif gs.bids_case == 2:
+            _write_gre_output(gs.phase_series[0], "phase1", gs.run_index)
+            _write_gre_output(gs.phase_series[1], "phase2", gs.run_index)
+            if len(gs.magnitude_series) >= 1:
+                _write_gre_output(gs.magnitude_series[0], "magnitude1", gs.run_index)
+            if len(gs.magnitude_series) >= 2:
+                _write_gre_output(gs.magnitude_series[1], "magnitude2", gs.run_index)
+
+        elif gs.bids_case == 3:
+            _write_gre_output(gs.phase_series[0], "fieldmap", gs.run_index)
+            if len(gs.magnitude_series) >= 1:
+                _write_gre_output(gs.magnitude_series[0], "magnitude", gs.run_index)
 
     # ------------------------------------------------------------------
     # Dataset-level files
@@ -519,7 +550,6 @@ def assemble(
     # ------------------------------------------------------------------
     # PatientID cross-check (PHI-safe: counts only, no values emitted)
     # ------------------------------------------------------------------
-    patient_id_warnings: list[str] = []
     patient_ids: set[str] = set()
     for snum, series in series_map.items():
         pid = series.raw.get("PatientID")
@@ -527,9 +557,21 @@ def assemble(
             patient_ids.add(str(pid))
 
     if len(patient_ids) > 1:
-        patient_id_warnings.append(
+        graded_warning(
+            _logger, SEVERITY_HIGH, "PATIENT_ID_MISMATCH",
             f"sub-{sub}: {len(patient_ids)} distinct PatientID values found "
-            f"across {len(series_map)} series. Manual identity review required."
+            f"across {len(series_map)} series. Manual identity review required.",
+            user_facing=True,
+        )
+        raise GuardError(
+            f"sub-{sub}: {len(patient_ids)} distinct PatientID values found "
+            f"across {len(series_map)} series. Halting: possible identity mix-up.",
+            context={
+                "guard": "patient_id_unique",
+                "sub": sub,
+                "n_patient_ids": len(patient_ids),
+                "n_series": len(series_map),
+            },
         )
 
     # Build non-PHI demographics summary
@@ -544,5 +586,5 @@ def assemble(
         sourcedata_files=sourcedata_files,
         demographics=demographics,
         review_flags=review_flags,
-        patient_id_warnings=patient_id_warnings,
+        patient_id_warnings=[],
     )

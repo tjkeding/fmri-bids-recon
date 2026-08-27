@@ -11,7 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .stage3_map import Mapping, FieldmapPair, PE_DIRECTION_TO_LABEL  # noqa: F401
+from .sidecar import nifti_stem
+from .stage3_map import Mapping, FieldmapUnit
 
 
 # ---------------------------------------------------------------------------
@@ -57,48 +58,28 @@ def _subject_relative_path(bids_root: Path, sub: str, nii_path: Path) -> str:
     return str(nii_path.relative_to(sub_dir))
 
 
-def _pair_identifier(pair: FieldmapPair) -> str:
-    """Generate a stable B0FieldIdentifier for a FieldmapPair.
+def _unit_identifier(unit: FieldmapUnit) -> str:
+    """Generate a stable B0FieldIdentifier for a FieldmapUnit.
 
     Pattern: ``pepolar{modality}{run_index:02d}``
     Examples: ``pepolarfunc01``, ``pepolarfunc02``, ``pepolardwi01``.
 
     Parameters
     ----------
-    pair : FieldmapPair
-        The fieldmap pair for which to generate an identifier.
+    unit : FieldmapUnit
+        The fieldmap unit for which to generate an identifier.
 
     Returns
     -------
     str
         Stable identifier string.
     """
-    return f"pepolar{pair.modality}{pair.run_index:02d}"
+    return f"pepolar{unit.modality}{unit.run_index:02d}"
 
 
 def _sidecar_path(nii_path: Path) -> Path:
-    """Return the sidecar JSON path corresponding to a NIfTI file path.
-
-    Handles both ``.nii.gz`` and ``.nii`` extensions.
-
-    Parameters
-    ----------
-    nii_path : Path
-        Path to the NIfTI file.
-
-    Returns
-    -------
-    Path
-        Corresponding ``.json`` sidecar path.
-    """
-    name = nii_path.name
-    if name.endswith(".nii.gz"):
-        stem = name[: -len(".nii.gz")]
-    elif name.endswith(".nii"):
-        stem = name[: -len(".nii")]
-    else:
-        stem = nii_path.stem
-    return nii_path.parent / f"{stem}.json"
+    """Return the sidecar JSON path corresponding to a NIfTI file path."""
+    return nii_path.parent / f"{nifti_stem(nii_path)}.json"
 
 
 # ---------------------------------------------------------------------------
@@ -109,14 +90,14 @@ def _sidecar_path(nii_path: Path) -> Path:
 def render(mapping: Mapping, bids_root: Path, sub: str, ses: str) -> None:
     """Write fieldmap association metadata into existing BIDS sidecar JSON files.
 
-    For each FieldmapPair in ``mapping.pairs`` and its targets from
-    ``mapping.pair_to_targets``, this function:
+    For each FieldmapUnit in ``mapping.units`` and its targets from
+    ``mapping.unit_to_targets``, this function:
 
     1. Adds ``IntendedFor`` (subject-relative legacy paths) to each fieldmap
-       member's sidecar, listing the NIfTI targets that pair covers.
-    2. Adds ``B0FieldIdentifier`` (a list containing the pair's stable identifier)
+       member's sidecar, listing the NIfTI targets that unit covers.
+    2. Adds ``B0FieldIdentifier`` (a list containing the unit's stable identifier)
        to each fieldmap member's sidecar.
-    3. Adds ``B0FieldSource`` (a list containing the pair's stable identifier)
+    3. Adds ``B0FieldSource`` (a list containing the unit's stable identifier)
        to each target series' sidecar.
 
     Both renderings originate from the same ``Mapping`` object, ensuring they
@@ -136,11 +117,11 @@ def render(mapping: Mapping, bids_root: Path, sub: str, ses: str) -> None:
     """
     sub_dir = bids_root / f"sub-{sub}"
 
-    for pair_idx, pair in enumerate(mapping.pairs):
-        targets = mapping.pair_to_targets.get(pair_idx, [])
-        identifier = _pair_identifier(pair)
+    for unit_idx, unit in enumerate(mapping.units):
+        targets = mapping.unit_to_targets.get(unit_idx, [])
+        identifier = _unit_identifier(unit)
 
-        # Compute subject-relative IntendedFor paths for this pair's targets.
+        # Compute subject-relative IntendedFor paths for this unit's targets.
         intended_for: list[str] = []
         for target in targets:
             rel = mapping.bids_relative_paths.get(target.series_number)
@@ -151,7 +132,7 @@ def render(mapping: Mapping, bids_root: Path, sub: str, ses: str) -> None:
 
         # Update each fieldmap member's sidecar with IntendedFor and
         # B0FieldIdentifier.
-        for member in (pair.member_a, pair.member_b):
+        for member in unit.members:
             member_rel = mapping.bids_relative_paths.get(member.series_number)
             if member_rel is None:      # member not emitted into the BIDS tree; nothing to annotate
                 continue

@@ -9,9 +9,14 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
+import logging
+
 from .sidecar import Series
 from .config import TaskRegistryEntry
-from .errors import ReviewFlag
+from .errors import GuardError
+from .warnings import graded_warning, SEVERITY_HIGH
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -39,7 +44,7 @@ class Excluded:
 def check_volume_counts(
     bolds: list[tuple[Series, str]],
     registry: dict[str, TaskRegistryEntry],
-) -> tuple[list[tuple[Series, str]], list[Excluded], dict[str, TaskRegistryEntry], list[ReviewFlag]]:
+) -> tuple[list[tuple[Series, str]], list[Excluded], dict[str, TaskRegistryEntry], list[dict]]:
     """Validate BOLD volume counts against the task registry.
 
     For each task label, looks up expected_volumes from the registry via the
@@ -67,13 +72,13 @@ def check_volume_counts(
     new_registry_entries : dict[str, TaskRegistryEntry]
         SeriesDescription -> TaskRegistryEntry for tasks whose expected_volumes
         were established this session.
-    review_flags : list[ReviewFlag]
+    review_flags : list[dict]
         Non-blocking advisory flags for single-run first-observation tasks.
     """
     surviving_bolds: list[tuple[Series, str]] = []
     excluded_list: list[Excluded] = []
     new_registry_entries: dict[str, TaskRegistryEntry] = {}
-    review_flags: list[ReviewFlag] = []
+    review_flags: list[dict] = []
 
     # Classify each BOLD series as known (expected_volumes set in registry)
     # or unknown (no registry entry, or expected_volumes is None).
@@ -115,17 +120,17 @@ def check_volume_counts(
             counter = Counter(counts)
             top = counter.most_common()
             if len(top) > 1 and top[0][1] == top[1][1]:
-                review_flags.append(
-                    ReviewFlag(
-                        f"Task {task_label!r}: no unique modal volume count among "
-                        f"{sorted(set(counts))}; no registry entry created, all runs "
-                        f"retained pending review.",
-                        {"code": "ambiguous_volume_mode"},
-                    )
+                raise GuardError(
+                    f"Task {task_label!r}: no unique modal volume count among "
+                    f"{sorted(set(counts))} ({n_runs} runs). Cannot determine "
+                    f"expected volume count; manual review required.",
+                    context={
+                        "guard": "exact_volume_counts",
+                        "task_label": task_label,
+                        "counts": sorted(set(counts)),
+                        "n_runs": n_runs,
+                    },
                 )
-                # do NOT create a new_registry_entries entry for this task; retain all bolds
-                for series, tlabel in group:
-                    surviving_bolds.append((series, tlabel))
             else:
                 mode_count: int = top[0][0]
 
@@ -145,6 +150,8 @@ def check_volume_counts(
                                 label=tlabel,
                                 expected_volumes=mode_count,
                                 first_seen=first_seen,
+                                signature=prior.signature if prior is not None else None,
+                                prefix=prior.prefix if prior is not None else None,
                             )
                     else:
                         excluded_list.append(
@@ -171,21 +178,19 @@ def check_volume_counts(
                 label=tlabel,
                 expected_volumes=series.n_volumes,
                 first_seen=first_seen,
+                signature=prior.signature if prior is not None else None,
+                prefix=prior.prefix if prior is not None else None,
             )
 
             review_flags.append(
-                ReviewFlag(
+                graded_warning(
+                    _logger, SEVERITY_HIGH, "VOLUME_COUNT_DRIFT",
                     f"Single-run first observation for task '{tlabel}' "
                     f"(series {series.series_number}, "
                     f"description '{series.description}'): "
                     f"n_volumes={series.n_volumes} registered without "
                     f"within-session corroboration.",
-                    {
-                        "task_label": tlabel,
-                        "series_number": series.series_number,
-                        "description": series.description,
-                        "n_volumes": series.n_volumes,
-                    },
+                    user_facing=True,
                 )
             )
 

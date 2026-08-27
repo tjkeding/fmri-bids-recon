@@ -10,9 +10,13 @@ tests/
 tools/
 sandbox/
 RAW_TEST_SUBJ_1/
+dcm_qa_*/
 
 # Development reports and internal documentation
 /bids-recon_*.md
+/fmri-bids-recon_*.md
+/HARMONIZE_*.md
+/cftsi-*.yaml
 RUNBOOK.md
 excalidraw.log
 

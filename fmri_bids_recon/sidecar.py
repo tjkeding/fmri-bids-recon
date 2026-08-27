@@ -7,6 +7,7 @@ pairs each with its companion NIfTI file to produce Series objects.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -84,6 +85,10 @@ class Series:
     nifti_path: Path
     sidecar_path: Path
     raw: dict
+    vendor: str | None = None
+    echo_number: int | None = None
+    phase_encoding_axis: str | None = None
+    sequence_name: str | None = None
     software_versions: str | None = None
     affine: tuple[tuple[float, ...], ...] | None = None
     image_position: tuple[float, float, float] | None = None
@@ -200,6 +205,23 @@ def _to_float_tuple_or_none(value: object) -> tuple[float, ...] | None:
     return tuple(float(v) for v in value)
 
 
+def _normalize_vendor(manufacturer: str | None) -> str | None:
+    """Normalize a DICOM Manufacturer string to a canonical vendor token.
+
+    Returns 'siemens', 'ge', 'philips', or None.
+    """
+    if not manufacturer:
+        return None
+    lower = manufacturer.strip().lower()
+    if "siemens" in lower:
+        return "siemens"
+    if "ge" in lower:
+        return "ge"
+    if "philips" in lower:
+        return "philips"
+    return None
+
+
 _PHYSIO_REQUIRED_FIELDS = ("SamplingFrequency", "StartTime", "Columns")
 
 
@@ -307,6 +329,10 @@ def load_series(staging: Path) -> tuple[list[Series], list[Path]]:
             nifti_path=nifti_path,
             sidecar_path=sidecar_path,
             raw=raw,
+            vendor=_normalize_vendor(raw.get("Manufacturer")),
+            echo_number=(int(raw["EchoNumber"]) if raw.get("EchoNumber") is not None else None),
+            phase_encoding_axis=raw.get("PhaseEncodingAxis"),
+            sequence_name=raw.get("SequenceName"),
             software_versions=raw.get("SoftwareVersions"),
             affine=affine,
             image_position=image_position,
@@ -333,3 +359,21 @@ def modality_token(s: Series) -> str:
         ``'OTHER'``.
     """
     return s.image_type[2] if len(s.image_type) > 2 else "OTHER"
+
+
+_SBREF_SUFFIX_RE = re.compile(r"[_\s]*sbref\s*$", re.IGNORECASE)
+
+
+def description_stem(desc: str) -> str:
+    """Strip trailing _SBRef (case-insensitive) and whitespace."""
+    return _SBREF_SUFFIX_RE.sub("", desc).lower().strip()
+
+
+def nifti_stem(path: Path) -> str:
+    """Return the bare stem of a NIfTI path with .nii.gz/.nii removed."""
+    name = path.name
+    if name.endswith(".nii.gz"):
+        return name[:-7]
+    if name.endswith(".nii"):
+        return name[:-4]
+    return path.stem

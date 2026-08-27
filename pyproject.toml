@@ -26,3 +26,15 @@ version = {attr = "fmri_bids_recon.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["fmri_bids_recon*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "level0_unit: Pure-function unit tests",
+    "level1_internal_integration: Cross-function integration within a module",
+    "level2_tool_equivalence: Verify tool wrapper output matches known reference",
+    "level3_checkpoint: Checkpoint/resume round-trip",
+    "level4_stage_integration: Single pipeline stage end-to-end",
+    "level5_adversarial: Edge cases, malformed input, boundary conditions",
+    "level6_cross_stage: Multi-stage integration",
+    "level7_pipeline: Full pipeline end-to-end",
+]

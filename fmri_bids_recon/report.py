@@ -7,13 +7,12 @@ for a single subject/session conversion.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .runs import Excluded
 from .sidecar import Series
-from .stage3_map import Mapping, FieldmapPair
+from .stage3_map import Mapping, PE_DIRECTION_TO_LABEL
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -54,8 +53,8 @@ def write_conversion_report(
         Series that did not match any classification rule.
     new_tasks : dict[str, str]
         Mapping of series description to auto-registered task label.
-    review_flags : list
-        Collection of ReviewFlag instances.
+    review_flags : list[dict]
+        Collection of graded warning dicts with keys: severity, code, message.
     mapping : Mapping
         Fieldmap-to-target assignment for all pairs.
     patient_id_warnings : list[str]
@@ -160,7 +159,7 @@ def write_conversion_report(
         lines.append("None")
     else:
         for flag in review_flags:
-            lines.append(f"- {flag}")
+            lines.append(f"- [{flag['severity']}:{flag['code']}] {flag['message']}")
     lines.append("")
 
     # -----------------------------------------------------------------------
@@ -168,14 +167,17 @@ def write_conversion_report(
     # -----------------------------------------------------------------------
     lines.append("## 6. FIELDMAP MAPPING")
     lines.append("")
-    if not mapping.pairs:
+    if not mapping.units:
         lines.append("None")
     else:
-        lines.append("| Pair (dir labels, run index) | Target Filenames |")
+        lines.append("| Unit (dir labels, run index) | Target Filenames |")
         lines.append("|---|---|")
-        for idx, pair in enumerate(mapping.pairs):
-            pair_label = f"dir-{pair.dir_a}/dir-{pair.dir_b}, run-{pair.run_index:02d}"
-            targets = mapping.pair_to_targets.get(idx, [])
+        for idx, unit in enumerate(mapping.units):
+            anatomical_labels = [
+                PE_DIRECTION_TO_LABEL.get(d, d) for d in unit.dir_labels
+            ]
+            unit_label = f"{'/'.join(f'dir-{l}' for l in anatomical_labels)}, run-{unit.run_index:02d}"
+            targets = mapping.unit_to_targets.get(idx, [])
             if targets:
                 target_names = ", ".join(
                     getattr(t, "bids_filename", getattr(t, "description", str(t)))
@@ -183,7 +185,12 @@ def write_conversion_report(
                 )
             else:
                 target_names = "(no targets)"
-            lines.append(f"| {pair_label} | {target_names} |")
+            lines.append(f"| {unit_label} | {target_names} |")
+    if mapping.unpaired_fmaps:
+        lines.append("")
+        lines.append("**Unpaired fieldmaps (routed to sourcedata):**")
+        for s in mapping.unpaired_fmaps:
+            lines.append(f"- series {s.series_number} ({s.description})")
     lines.append("")
 
     # -----------------------------------------------------------------------
