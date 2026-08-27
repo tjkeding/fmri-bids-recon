@@ -3,12 +3,12 @@ python: "3.12.13"
 binaries:
   dcm2niix:
     pin_class: A
-    version: "1.0.20260416"
+    version: "1.0.20220720"
     binary: dcm2niix
     version_flag: "--version"
   pydeface:
     pin_class: B
-    version: "2.1.0"
+    version: "2.0.0"
     binary: pydeface
     version_flag: "--version"
     conditional: deface
