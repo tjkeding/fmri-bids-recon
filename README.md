@@ -101,7 +101,7 @@ The pipeline reads the `FSLDIR` environment variable (set by `module load FSL`) 
 
 Two runtime guards protect against module-system contamination:
 
-1. **sys.path sanitization**: at startup, the pipeline strips foreign-version Python site-packages entries (e.g., FSL's Python 3.11 paths in a Python 3.12 environment) from `sys.path` and `PYTHONPATH`.
+1. **sys.path sanitization**: at package import time (`__init__.py`), the pipeline strips foreign-version Python site-packages entries (e.g., FSL's Python 3.11 paths in a Python 3.12 environment) from `sys.path` and `PYTHONPATH`.
 2. **FSLDIR-based tool resolution**: `flirt` is resolved via `$FSLDIR/bin/flirt` rather than PATH lookup, avoiding circular PATH conflicts between conda and FSL.
 
 ## Configuration

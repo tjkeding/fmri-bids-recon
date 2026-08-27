@@ -397,7 +397,8 @@ def assemble(
             shutil.copy2(series.nifti_path, sd_dest)
             sourcedata_files.append(sd_dest)
 
-        # Role.DROP_DERIVED, DROP_SCOUT, DROP_NAVIGATOR: silently discarded.
+        # Role.DROP_DERIVED, DROP_SCOUT, DROP_NAVIGATOR, DROP_CALIBRATION:
+        # silently discarded.
         # Role.UNCLASSIFIED: handled below via the dedicated `unclassified` list.
         # Role.FMAP_GRE_PHASE, FMAP_GRE_MAG: handled set-wise by the dedicated
         # GRE fieldmap assembly block below, not per-series.

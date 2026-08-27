@@ -3,7 +3,7 @@
 Assigns a :class:`Role` to every :class:`~fmri_bids_recon.sidecar.Series` loaded
 from the staging directory. Classification applies ten ordered rules with
 first-match-wins semantics, followed by an anatomical NORM/ND twin resolution
-pass.
+pass and a calibration sequence exclusion pass.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ class Role(StrEnum):
     DROP_NAVIGATOR = "drop_navigator"
     DROP_ANAT_ND_T1W = "drop_anat_nd_t1w"
     DROP_ANAT_ND_T2W = "drop_anat_nd_t2w"
+    DROP_CALIBRATION = "drop_calibration"
     UNCLASSIFIED = "unclassified"
 
 
@@ -185,6 +186,7 @@ def _has_nonzero_bval(s: Series) -> bool:
 
 
 _SCOUT_KEYWORDS = frozenset({"scout", "localizer", "survey", "3-plane", "3plane"})
+_CALIBRATION_KEYWORDS = frozenset({"setter", "prescan"})
 
 
 def _is_epi_bold_physics(s: Series) -> bool:
@@ -209,7 +211,10 @@ def classify(
     Rules are evaluated in order; the first matching rule wins.  After the
     initial per-series pass, an anatomical NORM/ND twin resolution pass
     demotes ND reconstructions to ``DROP_ANAT_ND_T1W`` / ``DROP_ANAT_ND_T2W``
-    where a NORM partner with identical matrix geometry exists.
+    where a NORM partner with identical matrix geometry exists.  A subsequent
+    calibration sequence exclusion pass demotes FMAP_FUNC/FMAP_DWI series
+    whose PE axis does not match any target series of the corresponding
+    modality to ``DROP_CALIBRATION``.
 
     Parameters
     ----------
@@ -482,6 +487,85 @@ def classify(
                     f"{count} series classified as {role_check.value} after "
                     f"classification; only one expected per session. "
                     f"Manual review recommended.",
+                )
+            )
+
+    # ------------------------------------------------------------------
+    # Calibration sequence exclusion pass (PE axis validation)
+    # ------------------------------------------------------------------
+    bold_pe_axes: set[str] = set()
+    dwi_pe_axes: set[str] = set()
+    for s in series:
+        r = roles.get(s.series_number)
+        if r == Role.BOLD and s.pe_axis is not None:
+            bold_pe_axes.add(s.pe_axis)
+        elif r == Role.DWI and s.pe_axis is not None:
+            dwi_pe_axes.add(s.pe_axis)
+
+    for s in series:
+        r = roles.get(s.series_number)
+        if r == Role.FMAP_FUNC:
+            if not bold_pe_axes:
+                continue
+            if s.pe_axis is not None and s.pe_axis not in bold_pe_axes:
+                roles[s.series_number] = Role.DROP_CALIBRATION
+                flags.append(
+                    graded_warning(
+                        _logger, SEVERITY_MEDIUM, "CALIBRATION_PE_AXIS_MISMATCH",
+                        f"Series {s.series_number} classified as FMAP_FUNC but "
+                        f"its PE axis '{s.pe_axis}' does not match any BOLD "
+                        f"series PE axis {bold_pe_axes}; demoted to "
+                        f"DROP_CALIBRATION.",
+                    )
+                )
+        elif r == Role.FMAP_DWI:
+            if not dwi_pe_axes:
+                continue
+            if s.pe_axis is not None and s.pe_axis not in dwi_pe_axes:
+                roles[s.series_number] = Role.DROP_CALIBRATION
+                flags.append(
+                    graded_warning(
+                        _logger, SEVERITY_MEDIUM, "CALIBRATION_PE_AXIS_MISMATCH",
+                        f"Series {s.series_number} classified as FMAP_DWI but "
+                        f"its PE axis '{s.pe_axis}' does not match any DWI "
+                        f"series PE axis {dwi_pe_axes}; demoted to "
+                        f"DROP_CALIBRATION.",
+                    )
+                )
+
+    # ------------------------------------------------------------------
+    # Calibration sequence exclusion pass (description keyword guard)
+    # ------------------------------------------------------------------
+    bold_stems: set[str] = set()
+    dwi_stems: set[str] = set()
+    for s in series:
+        r = roles.get(s.series_number)
+        if r == Role.BOLD:
+            bold_stems.add(description_stem(s.description))
+        elif r == Role.DWI:
+            dwi_stems.add(description_stem(s.description))
+
+    for s in series:
+        r = roles.get(s.series_number)
+        if r not in (Role.FMAP_FUNC, Role.FMAP_DWI):
+            continue
+        desc_lower = s.description.lower()
+        if not any(kw in desc_lower for kw in _CALIBRATION_KEYWORDS):
+            continue
+        if s.n_volumes != 1:
+            continue
+        stem = description_stem(s.description)
+        target_stems = bold_stems if r == Role.FMAP_FUNC else dwi_stems
+        if stem not in target_stems:
+            roles[s.series_number] = Role.DROP_CALIBRATION
+            flags.append(
+                graded_warning(
+                    _logger, SEVERITY_MEDIUM, "CALIBRATION_KEYWORD_MATCH",
+                    f"Series {s.series_number} (role={r.value}) matches "
+                    f"calibration keyword in description "
+                    f"{s.description!r} and its description stem "
+                    f"does not match any target series; demoted to "
+                    f"DROP_CALIBRATION.",
                 )
             )
 
