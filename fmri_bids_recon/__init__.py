@@ -23,7 +23,7 @@ def _sanitize_sys_path() -> None:
 
 _sanitize_sys_path()
 
-__version__ = '1.0.0'
+__version__ = '1.10.0'
 
 from .config import load_and_validate
 from .pipeline import run, BidsReconResult
