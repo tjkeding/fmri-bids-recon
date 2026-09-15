@@ -38,6 +38,10 @@ from .json_intermediate import dump_intermediate, load_intermediate
 from .errors import GuardError
 from . import __version__
 from .warnings import graded_warning, get_warnings, clear_warnings
+from contextvars import ContextVar
+
+_current_sub: ContextVar[str] = ContextVar("_current_sub", default="")
+_current_ses: ContextVar[str] = ContextVar("_current_ses", default="")
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +98,15 @@ def run(
     config_path: Path | None = None,
 ) -> BidsReconResult:
     """Execute the DICOM-to-BIDS reconstruction pipeline.
+
+    Every log message emitted while a given (subject, session) is being
+    processed is tagged with a ``[sub-X ses-Y]`` prefix (see
+    ``__main__._ParticipantFormatter``); the per-participant loops below set
+    this context via ``contextvars`` and guarantee its cleanup (via
+    try/finally) on every exit path -- normal completion, an early
+    ``continue``, or a propagating exception -- so one participant's context
+    never leaks into another's log lines or into a log line emitted outside
+    any participant loop.
 
     Parameters
     ----------
@@ -154,107 +167,116 @@ def run(
     # === PHASE 1: CONVERT ALL PARTICIPANTS ===
     for p in config.participants:
         sub, ses = p.sub, p.ses
-        if should_skip(manifest, sub, ses):
-            logger.info('Skipping already-validated sub=%s ses=%s', sub, ses)
-            continue
+        _sub_token = _current_sub.set(sub)
+        _ses_token = _current_ses.set(ses)
+        # try/finally (not an explicit reset at the end of the body) so the
+        # context is cleared even on the should_skip continue below or on a
+        # raised GuardError, rather than leaking into the next participant.
+        try:
+            if should_skip(manifest, sub, ses):
+                logger.info('Skipping already-validated sub=%s ses=%s', sub, ses)
+                continue
 
-        staging_dir = Path(config.staging_root) / f'sub-{sub}' / f'ses-{ses}'
-        guard_log: dict = {name: False for name in ALL_GUARD_NAMES}
+            staging_dir = Path(config.staging_root) / f'sub-{sub}' / f'ses-{ses}'
+            guard_log: dict = {name: False for name in ALL_GUARD_NAMES}
 
-        # Stage 1
-        staging = convert_to_staging(p.source, staging_dir, 'dcm2niix')
-        all_series, physio_sidecar_paths = load_series(staging.staging_dir)
-        guard_log['dcm2niix_version_floor'] = True
+            # Stage 1
+            staging = convert_to_staging(p.source, staging_dir, 'dcm2niix')
+            all_series, physio_sidecar_paths = load_series(staging.staging_dir)
+            guard_log['dcm2niix_version_floor'] = True
 
-        # Stage 2
-        roles, review_flags = classify(all_series)
-        series_map = {s.series_number: s for s in all_series}
-        series_by_role = {sn: (series_map[sn], role) for sn, role in roles.items()}
-        guard_log['anat_suffix_physics'] = True
+            # Stage 2
+            roles, review_flags = classify(all_series)
+            series_map = {s.series_number: s for s in all_series}
+            series_by_role = {sn: (series_map[sn], role) for sn, role in roles.items()}
+            guard_log['anat_suffix_physics'] = True
 
-        # Labels
-        labels_dict, registry_delta = resolve_labels(series_by_role, config.task_registry)
-        guard_log['label_injectivity'] = True
-        guard_log['non_empty_labels'] = True
-        guard_log['no_label_drift'] = True
-        guard_log['no_rename_collision'] = True
-        bolds = [(series_map[sn], labels_dict[sn]) for sn, role in roles.items() if role == Role.BOLD]
-        surviving, excluded, vol_updates, vol_flags = check_volume_counts(bolds, config.task_registry)
-        guard_log['exact_volume_counts'] = True
-        review_flags.extend(vol_flags)
-        run_indices = assign_run_indices(surviving)
+            # Labels
+            labels_dict, registry_delta = resolve_labels(series_by_role, config.task_registry)
+            guard_log['label_injectivity'] = True
+            guard_log['non_empty_labels'] = True
+            guard_log['no_label_drift'] = True
+            guard_log['no_rename_collision'] = True
+            bolds = [(series_map[sn], labels_dict[sn]) for sn, role in roles.items() if role == Role.BOLD]
+            surviving, excluded, vol_updates, vol_flags = check_volume_counts(bolds, config.task_registry)
+            guard_log['exact_volume_counts'] = True
+            review_flags.extend(vol_flags)
+            run_indices = assign_run_indices(surviving)
 
-        # Stage 3
-        ordered = order_series(all_series)
-        fmaps = [(series_map[sn], role) for sn, role in roles.items() if role in (Role.FMAP_FUNC, Role.FMAP_DWI)]
-        units, unpaired_fmaps = group_fieldmaps(fmaps, ordered, guard_log)
-        excluded_sns = {e.series.series_number for e in excluded}
-        targets = [
-            (series_map[sn], role)
-            for sn, role in roles.items()
-            if role in (Role.BOLD, Role.DWI, Role.SBREF, Role.DWI_SBREF)
-            and sn not in excluded_sns
-        ]
-        if not units:
-            graded_warning(
-                logger, "medium", "NO_FIELDMAP_SERIES",
-                "No fieldmap series found; proceeding without fieldmap correction.",
-            )
-            mapping = Mapping(units=[], unit_to_targets={}, unpaired_fmaps=unpaired_fmaps)
-            guard_log["opposite_pe_within_pair"] = True
-            guard_log["dir_label_pe_agreement"] = True
-            guard_log["fieldmap_target_geometry_match"] = True
-            guard_log["pe_axis_target_match"] = True
-            guard_log["association_unambiguous"] = True
-            guard_log["no_orphan_pairs"] = True
-        else:
-            mapping = map_fieldmaps(units, targets, ordered, guard_log, unpaired_fmaps=unpaired_fmaps)
+            # Stage 3
+            ordered = order_series(all_series)
+            fmaps = [(series_map[sn], role) for sn, role in roles.items() if role in (Role.FMAP_FUNC, Role.FMAP_DWI)]
+            units, unpaired_fmaps = group_fieldmaps(fmaps, ordered, guard_log)
+            excluded_sns = {e.series.series_number for e in excluded}
+            targets = [
+                (series_map[sn], role)
+                for sn, role in roles.items()
+                if role in (Role.BOLD, Role.DWI, Role.SBREF, Role.DWI_SBREF)
+                and sn not in excluded_sns
+            ]
+            if not units:
+                graded_warning(
+                    logger, "medium", "NO_FIELDMAP_SERIES",
+                    "No fieldmap series found; proceeding without fieldmap correction.",
+                )
+                mapping = Mapping(units=[], unit_to_targets={}, unpaired_fmaps=unpaired_fmaps)
+                guard_log["opposite_pe_within_pair"] = True
+                guard_log["dir_label_pe_agreement"] = True
+                guard_log["fieldmap_target_geometry_match"] = True
+                guard_log["pe_axis_target_match"] = True
+                guard_log["association_unambiguous"] = True
+                guard_log["no_orphan_pairs"] = True
+            else:
+                mapping = map_fieldmaps(units, targets, ordered, guard_log, unpaired_fmaps=unpaired_fmaps)
 
-        # GRE fieldmap grouping (mutates `roles`: rescued magnitude series are
-        # reclassified from UNCLASSIFIED to FMAP_GRE_MAG). Must run before the
-        # `unclassified` list is computed below.
-        gre_sets, _unassociated_gre_magnitudes = group_gre_fieldmaps(roles, series_map, guard_log)
-        gre_sets = map_gre_fieldmaps(gre_sets, targets, guard_log)
+            # GRE fieldmap grouping (mutates `roles`: rescued magnitude series are
+            # reclassified from UNCLASSIFIED to FMAP_GRE_MAG). Must run before the
+            # `unclassified` list is computed below.
+            gre_sets, _unassociated_gre_magnitudes = group_gre_fieldmaps(roles, series_map, guard_log)
+            gre_sets = map_gre_fieldmaps(gre_sets, targets, guard_log)
 
-        # Physio gate (convert phase)
-        physio_pairs: dict = {}
-        if config.physio:
-            try:
-                recordings = discover_native_physio(physio_sidecar_paths)
-                bold_series = [series_map[sn] for sn, role in roles.items() if role == Role.BOLD]
-                physio_pairs = associate_native_physio(recordings, bold_series)
-            except Exception as physio_exc:
-                if isinstance(physio_exc, GuardError):
-                    raise
-                logger.warning('Physio extraction skipped for sub=%s ses=%s: %s', sub, ses, physio_exc)
-        elif not physio_disabled_logged:
-            logger.info('Physio extraction disabled (config.physio=false); skipping.')
-            physio_disabled_logged = True
+            # Physio gate (convert phase)
+            physio_pairs: dict = {}
+            if config.physio:
+                try:
+                    recordings = discover_native_physio(physio_sidecar_paths)
+                    bold_series = [series_map[sn] for sn, role in roles.items() if role == Role.BOLD]
+                    physio_pairs = associate_native_physio(recordings, bold_series)
+                except Exception as physio_exc:
+                    if isinstance(physio_exc, GuardError):
+                        raise
+                    logger.warning('Physio extraction skipped for sub=%s ses=%s: %s', sub, ses, physio_exc)
+            elif not physio_disabled_logged:
+                logger.info('Physio extraction disabled (config.physio=false); skipping.')
+                physio_disabled_logged = True
 
-        combined_guard_log.update(guard_log)
+            combined_guard_log.update(guard_log)
 
-        merged_registry.update(registry_delta.new_entries)
-        merged_registry.update(vol_updates)
+            merged_registry.update(registry_delta.new_entries)
+            merged_registry.update(vol_updates)
 
-        intermediate = {
-            'roles': roles,
-            'labels_dict': labels_dict,
-            'run_indices': run_indices,
-            'mapping': mapping,
-            'excluded': excluded,
-            'review_flags': review_flags,
-            'physio_pairs': physio_pairs,
-            'registry_delta': registry_delta,
-            'vol_updates': vol_updates,
-            'guard_log': guard_log,
-            'version_str': version_str,
-            'series_map': series_map,
-            'unclassified': [series_map[sn] for sn, role in roles.items() if role == Role.UNCLASSIFIED],
-            'gre_sets': gre_sets,
-        }
-        json_path = staging.staging_dir / f'{sub}_{ses}_intermediate.json'
-        dump_intermediate(intermediate, json_path)
-        logger.info('convert complete: sub=%s ses=%s series=%d excluded=%d', sub, ses, len(all_series), len(excluded))
+            intermediate = {
+                'roles': roles,
+                'labels_dict': labels_dict,
+                'run_indices': run_indices,
+                'mapping': mapping,
+                'excluded': excluded,
+                'review_flags': review_flags,
+                'physio_pairs': physio_pairs,
+                'registry_delta': registry_delta,
+                'vol_updates': vol_updates,
+                'guard_log': guard_log,
+                'version_str': version_str,
+                'series_map': series_map,
+                'unclassified': [series_map[sn] for sn, role in roles.items() if role == Role.UNCLASSIFIED],
+                'gre_sets': gre_sets,
+            }
+            json_path = staging.staging_dir / f'{sub}_{ses}_intermediate.json'
+            dump_intermediate(intermediate, json_path)
+            logger.info('convert complete: sub=%s ses=%s series=%d excluded=%d', sub, ses, len(all_series), len(excluded))
+        finally:
+            _current_sub.reset(_sub_token)
+            _current_ses.reset(_ses_token)
 
     # === PHASE 2: ASSERT GUARDS (before any assembly write) ===
     assert_guards_executed(combined_guard_log)
@@ -262,57 +284,65 @@ def run(
     # === PHASE 3: ASSEMBLE ALL PARTICIPANTS ===
     for p in config.participants:
         sub, ses = p.sub, p.ses
-        staging_dir = Path(config.staging_root) / f'sub-{sub}' / f'ses-{ses}'
-        json_path = staging_dir / f'{sub}_{ses}_intermediate.json'
-        if not json_path.exists():
-            continue
-        intermediate = load_intermediate(json_path)
+        _sub_token = _current_sub.set(sub)
+        _ses_token = _current_ses.set(ses)
+        # See the Phase 1 loop above: try/finally guarantees cleanup on the
+        # missing-intermediate-json continue below too.
+        try:
+            staging_dir = Path(config.staging_root) / f'sub-{sub}' / f'ses-{ses}'
+            json_path = staging_dir / f'{sub}_{ses}_intermediate.json'
+            if not json_path.exists():
+                continue
+            intermediate = load_intermediate(json_path)
 
-        roles = intermediate['roles']
-        labels_dict = intermediate['labels_dict']
-        run_indices = intermediate['run_indices']
-        mapping_i = intermediate['mapping']
-        physio_pairs = intermediate['physio_pairs']
-        registry_delta = intermediate.get('registry_delta') or RegistryDelta()
-        review_flags = intermediate.get('review_flags', [])
-        version_str_i = intermediate.get('version_str', version_str)
-        series_map = intermediate['series_map']
-        unclassified = intermediate['unclassified']
-        excluded = intermediate.get('excluded', [])
-        gre_sets = intermediate.get('gre_sets', [])
+            roles = intermediate['roles']
+            labels_dict = intermediate['labels_dict']
+            run_indices = intermediate['run_indices']
+            mapping_i = intermediate['mapping']
+            physio_pairs = intermediate['physio_pairs']
+            registry_delta = intermediate.get('registry_delta') or RegistryDelta()
+            review_flags = intermediate.get('review_flags', [])
+            version_str_i = intermediate.get('version_str', version_str)
+            series_map = intermediate['series_map']
+            unclassified = intermediate['unclassified']
+            excluded = intermediate.get('excluded', [])
+            gre_sets = intermediate.get('gre_sets', [])
 
-        result = assemble(roles=roles, series_map=series_map, labels=labels_dict,
-                          run_indices=run_indices, mapping=mapping_i, excluded=excluded,
-                          unclassified=unclassified, config=config, participant=p,
-                          staging_dir=staging_dir, gre_sets=gre_sets,
-                          unpaired_fmaps=mapping_i.unpaired_fmaps)
+            result = assemble(roles=roles, series_map=series_map, labels=labels_dict,
+                              run_indices=run_indices, mapping=mapping_i, excluded=excluded,
+                              unclassified=unclassified, config=config, participant=p,
+                              staging_dir=staging_dir, gre_sets=gre_sets,
+                              unpaired_fmaps=mapping_i.unpaired_fmaps)
 
-        render(mapping_i, bids_root, sub, ses)
+            render(mapping_i, bids_root, sub, ses)
 
-        if config.physio:
-            for bold_snum, physio_snum in physio_pairs.items():
-                label = labels_dict[bold_snum]
-                run_idx = run_indices[bold_snum]
-                run_prefix = f'sub-{sub}_ses-{ses}_task-{label}_run-{run_idx:02d}'
-                func_dir = bids_root / f'sub-{sub}' / f'ses-{ses}' / 'func'
-                write_physio(physio_snum, staging_dir, run_prefix, func_dir)
+            if config.physio:
+                for bold_snum, physio_snum in physio_pairs.items():
+                    label = labels_dict[bold_snum]
+                    run_idx = run_indices[bold_snum]
+                    run_prefix = f'sub-{sub}_ses-{ses}_task-{label}_run-{run_idx:02d}'
+                    func_dir = bids_root / f'sub-{sub}' / f'ses-{ses}' / 'func'
+                    write_physio(physio_snum, staging_dir, run_prefix, func_dir)
 
-        new_tasks = {desc: e.label for desc, e in registry_delta.new_entries.items()}
+            new_tasks = {desc: e.label for desc, e in registry_delta.new_entries.items()}
 
-        write_conversion_report(bids_root=bids_root, sub=sub, ses=ses,
-            excluded=excluded, unclassified=unclassified,
-            new_tasks=new_tasks,
-            review_flags=review_flags, mapping=mapping_i,
-            patient_id_warnings=result.patient_id_warnings,
-            dcm2niix_version=version_str_i, engine_version=__version__,
-            config_path=effective_config_path)
+            write_conversion_report(bids_root=bids_root, sub=sub, ses=ses,
+                excluded=excluded, unclassified=unclassified,
+                new_tasks=new_tasks,
+                review_flags=review_flags, mapping=mapping_i,
+                patient_id_warnings=result.patient_id_warnings,
+                dcm2niix_version=version_str_i, engine_version=__version__,
+                config_path=effective_config_path)
 
-        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        update_manifest(manifest_path,
-            ManifestEntry(sub=sub, ses=ses, status='assembled',
-                          timestamp=timestamp, dcm2niix_version=version_str_i))
+            timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            update_manifest(manifest_path,
+                ManifestEntry(sub=sub, ses=ses, status='assembled',
+                              timestamp=timestamp, dcm2niix_version=version_str_i))
 
-        participants_processed.append(f"sub-{sub}_ses-{ses}")
+            participants_processed.append(f"sub-{sub}_ses-{ses}")
+        finally:
+            _current_sub.reset(_sub_token)
+            _current_ses.reset(_ses_token)
 
     # === PHASE 4: SAVE REGISTRY ===
     config.task_registry.clear()

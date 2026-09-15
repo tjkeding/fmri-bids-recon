@@ -97,6 +97,11 @@ The classifier (stage 2) assigns BIDS roles based on sidecar fields written by d
 | DWI | `_dwi` | Diffusion-weighted imaging |
 | Fieldmap (functional) | `_epi` | EPI acquired for distortion correction |
 | Fieldmap (SBRef) | `_sbref` | Single-band reference passenger series |
+| DWI (SBRef) | `_sbref` | Single-band reference passenger preceding a diffusion-weighted acquisition |
+
+**DWI SBRef bval guard**: a single-volume EPI immediately preceding a diffusion/spin-echo series (same description stem) is classified `DWI_SBREF` only if the successor's `.bval` sidecar exists and carries at least one non-zero value. If the successor's `.bval` exists but is all-zero, the successor is itself a b0-only fieldmap EPI rather than genuine DWI, and the passenger is left `UNCLASSIFIED` instead.
+
+**DWI run indexing**: DWI run indices are assigned per phase-encoding direction rather than globally, so independently-acquired AP and PA diffusion protocols within the same session each number their own runs starting at 1. A `DWI_SBREF` passenger inherits the run index of its temporally-nearest subsequent DWI series within the same direction group (or the group's earliest DWI if none follows).
 
 **Calibration sequence exclusion**: after the initial classification pass, a two-layer post-classification guard demotes spurious fieldmap candidates to `DROP_CALIBRATION` (silently discarded). The primary layer checks phase-encoding (PE) axis compatibility: an `FMAP_FUNC` series whose PE axis does not match any BOLD series (or an `FMAP_DWI` series whose PE axis does not match any DWI series) is demoted. This is a physics-based guard rooted in the requirement that a fieldmap must share its target's PE axis for distortion correction to be applicable (Jezzard and Balaban, MRM 1995). The secondary layer applies a compound keyword guard: series matching known calibration description keywords (e.g., "setter", "prescan") that are single-volume and whose description stem does not match any target modality series are also demoted. If no target modality series exist in the session, both layers are bypassed to avoid false demotion in partial or aborted protocols.
 

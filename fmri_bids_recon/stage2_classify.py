@@ -358,8 +358,15 @@ def classify(
                     and canonical_modality(_r5_nxt) in ("DIFFUSION", "SE_EPI")
                     and _bval_exists(_r5_nxt)
                 ):
-                    roles[s.series_number] = Role.DWI_SBREF
-                    continue
+                    if _has_nonzero_bval(_r5_nxt):
+                        roles[s.series_number] = Role.DWI_SBREF
+                        continue
+                    else:
+                        # The successor's .bval exists but is all-zero, so it
+                        # is itself a b0-only fieldmap EPI rather than genuine
+                        # DWI; this passenger is not a diffusion SBRef.
+                        roles[s.series_number] = Role.UNCLASSIFIED
+                        continue
             roles[s.series_number] = Role.FMAP_FUNC
             continue
 
@@ -403,8 +410,14 @@ def classify(
                         roles[s.series_number] = Role.SBREF
                         continue
                     if nxt_tok in ("DIFFUSION", "SE_EPI") and _bval_exists(nxt):
-                        roles[s.series_number] = Role.DWI_SBREF
-                        continue
+                        if _has_nonzero_bval(nxt):
+                            roles[s.series_number] = Role.DWI_SBREF
+                            continue
+                        else:
+                            # Same reasoning as Rule 5: an all-zero .bval
+                            # successor is a b0 fieldmap EPI, not genuine DWI.
+                            roles[s.series_number] = Role.UNCLASSIFIED
+                            continue
 
         # Rule 10: UNCLASSIFIED
         roles[s.series_number] = Role.UNCLASSIFIED

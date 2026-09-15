@@ -19,10 +19,32 @@ from pathlib import Path
 
 from .config import load_and_validate
 from .pipeline import run
+from .pipeline import _current_sub, _current_ses
 from .errors import GuardError, ConfigError, ToolUnavailableError, ToolVersionError, BidsReconError
 from . import __version__, _STRIPPED_PATHS
 
 logger = logging.getLogger(__name__)
+
+
+class _ParticipantFormatter(logging.Formatter):
+    """Transparently inject the active participant into every log record.
+
+    Reads ``pipeline._current_sub``/``_current_ses`` (set for the duration of
+    each per-participant loop iteration in ``pipeline.run()``) rather than
+    requiring every call site across every module to pass sub/ses explicitly.
+    Degrades gracefully to no tag when no participant loop is active (both
+    ContextVars default to ``""``), e.g. during tool-registry pre-flight or
+    the final run summary.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        sub = _current_sub.get("")
+        ses = _current_ses.get("")
+        if sub and ses:
+            record.participant_ctx = f" [sub-{sub} ses-{ses}]"
+        else:
+            record.participant_ctx = ""
+        return super().format(record)
 
 
 def _setup_logging(log_file: Path | None = None) -> None:
@@ -30,8 +52,8 @@ def _setup_logging(log_file: Path | None = None) -> None:
     if root.handlers:
         return
 
-    formatter = logging.Formatter(
-        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    formatter = _ParticipantFormatter(
+        fmt="%(asctime)s [%(levelname)s] %(name)s%(participant_ctx)s: %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
 

@@ -251,11 +251,53 @@ def assemble(
     anat_run_index: dict[int, int] = {sn: i + 1 for i, sn in enumerate(t1w_snums)}
     anat_run_index.update({sn: i + 1 for i, sn in enumerate(t2w_snums)})
 
-    dwi_snums = sorted(
-        [sn for sn, r in roles.items() if r in (Role.DWI, Role.DWI_SBREF)],
-        key=_acq_sort_key,
-    )
-    dwi_run_index: dict[int, int] = {sn: i + 1 for i, sn in enumerate(dwi_snums)}
+    # ------------------------------------------------------------------
+    # DWI run indices are assigned per phase-encoding direction, not
+    # globally: a session with independent AP and PA diffusion protocols
+    # (e.g. multi-shell acquisitions acquired in both directions for
+    # distortion correction) numbers each direction's runs 1..N on its own,
+    # since they are not repeats of the same acquisition. A DWI_SBREF
+    # passenger inherits the run index of its temporally-nearest subsequent
+    # DWI series within the same direction group (falling back to the
+    # group's earliest DWI if none follows), mirroring how the passenger
+    # precedes its parent acquisition on the scanner.
+    # ------------------------------------------------------------------
+    dwi_by_dir: dict[str, list[int]] = {}
+    for sn, r in roles.items():
+        if r == Role.DWI:
+            dir_label = PE_DIRECTION_TO_LABEL.get(
+                series_map[sn].phase_encoding_direction or "")
+            if dir_label is not None:
+                dwi_by_dir.setdefault(dir_label, []).append(sn)
+
+    dwi_run_index: dict[int, int] = {}
+    for dir_label, snums in dwi_by_dir.items():
+        ordered = sorted(snums, key=_acq_sort_key)
+        for idx, sn in enumerate(ordered, start=1):
+            dwi_run_index[sn] = idx
+
+    for sn, r in roles.items():
+        if r == Role.DWI_SBREF:
+            sbref_s = series_map[sn]
+            dir_label = PE_DIRECTION_TO_LABEL.get(
+                sbref_s.phase_encoding_direction or "")
+            if dir_label is None:
+                dwi_run_index[sn] = 1
+                continue
+            sbref_key = _acq_sort_key(sn)
+            dwi_snums_same_dir = sorted(
+                dwi_by_dir.get(dir_label, []),
+                key=_acq_sort_key,
+            )
+            parent_dwi_snum = next(
+                (dsn for dsn in dwi_snums_same_dir
+                 if _acq_sort_key(dsn) > sbref_key),
+                dwi_snums_same_dir[0] if dwi_snums_same_dir else None,
+            )
+            dwi_run_index[sn] = (
+                dwi_run_index[parent_dwi_snum]
+                if parent_dwi_snum is not None else 1
+            )
 
     # ------------------------------------------------------------------
     # Provenance: copy original staging sidecars to sourcedata

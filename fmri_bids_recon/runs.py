@@ -52,9 +52,16 @@ def check_volume_counts(
     exact-match enforcement.  Series whose description is absent from the
     registry (or whose registry entry carries expected_volumes=None) are
     handled by within-session reasoning: if two or more runs of the task are
-    present, the within-session mode establishes the expected count and
-    outliers are excluded; if exactly one run is present, it is accepted,
-    registered, and flagged for review.
+    present and a clear modal volume count exists (no tie for most common),
+    that mode establishes the expected count and outliers are excluded. If
+    the top two counts are tied, the tie is resolved by run count: for
+    exactly two runs, fMRI protocols never over-acquire, so the shorter run
+    is presumed a truncated/aborted acquisition and is excluded while the
+    longer run is accepted and registered (ABORTED_RUN_DETECTED warning);
+    for three or more tied runs, no single run is uniquely implicated as the
+    truncated one, so the guard raises GuardError instead of guessing. If
+    exactly one run is present, it is accepted, registered, and flagged for
+    review.
 
     Parameters
     ----------
@@ -120,48 +127,62 @@ def check_volume_counts(
             counter = Counter(counts)
             top = counter.most_common()
             if len(top) > 1 and top[0][1] == top[1][1]:
-                raise GuardError(
-                    f"Task {task_label!r}: no unique modal volume count among "
-                    f"{sorted(set(counts))} ({n_runs} runs). Cannot determine "
-                    f"expected volume count; manual review required.",
-                    context={
-                        "guard": "exact_volume_counts",
-                        "task_label": task_label,
-                        "counts": sorted(set(counts)),
-                        "n_runs": n_runs,
-                    },
-                )
+                if n_runs == 2:
+                    mode_count = max(counts)
+                    review_flags.append(
+                        graded_warning(
+                            _logger, SEVERITY_HIGH, "ABORTED_RUN_DETECTED",
+                            f"Task {task_label!r}: 2 runs with different volume "
+                            f"counts {sorted(set(counts))}. Accepted the "
+                            f"{mode_count}-volume run and excluded the other as "
+                            f"a probable aborted acquisition. Manual review "
+                            f"recommended.",
+                            user_facing=True,
+                        )
+                    )
+                else:
+                    raise GuardError(
+                        f"Task {task_label!r}: no unique modal volume count among "
+                        f"{sorted(set(counts))} ({n_runs} runs). Cannot determine "
+                        f"expected volume count; manual review required.",
+                        context={
+                            "guard": "exact_volume_counts",
+                            "task_label": task_label,
+                            "counts": sorted(set(counts)),
+                            "n_runs": n_runs,
+                        },
+                    )
             else:
                 mode_count: int = top[0][0]
 
-                for series, tlabel in group:
-                    if series.n_volumes == mode_count:
-                        surviving_bolds.append((series, tlabel))
-                        # Register expected_volumes keyed by series description;
-                        # first surviving description in the group sets the entry.
-                        if series.description not in new_registry_entries:
-                            prior = registry.get(series.description)
-                            first_seen = (
-                                prior.first_seen
-                                if prior is not None
-                                else series.acquisition_datetime.date().isoformat()
-                            )
-                            new_registry_entries[series.description] = TaskRegistryEntry(
-                                label=tlabel,
-                                expected_volumes=mode_count,
-                                first_seen=first_seen,
-                                signature=prior.signature if prior is not None else None,
-                                prefix=prior.prefix if prior is not None else None,
-                            )
-                    else:
-                        excluded_list.append(
-                            Excluded(
-                                series=series,
-                                task_label=tlabel,
-                                observed_volumes=series.n_volumes,
-                                expected_volumes=mode_count,
-                            )
+            for series, tlabel in group:
+                if series.n_volumes == mode_count:
+                    surviving_bolds.append((series, tlabel))
+                    # Register expected_volumes keyed by series description;
+                    # first surviving description in the group sets the entry.
+                    if series.description not in new_registry_entries:
+                        prior = registry.get(series.description)
+                        first_seen = (
+                            prior.first_seen
+                            if prior is not None
+                            else series.acquisition_datetime.date().isoformat()
                         )
+                        new_registry_entries[series.description] = TaskRegistryEntry(
+                            label=tlabel,
+                            expected_volumes=mode_count,
+                            first_seen=first_seen,
+                            signature=prior.signature if prior is not None else None,
+                            prefix=prior.prefix if prior is not None else None,
+                        )
+                else:
+                    excluded_list.append(
+                        Excluded(
+                            series=series,
+                            task_label=tlabel,
+                            observed_volumes=series.n_volumes,
+                            expected_volumes=mode_count,
+                        )
+                    )
 
         else:
             # Exactly 1 run: accept, register, and flag for review.

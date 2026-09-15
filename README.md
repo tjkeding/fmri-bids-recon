@@ -144,6 +144,8 @@ fmri-bids-recon config/my_study.yaml
 
 The pipeline processes every (subject, session) pair from the cross product of the `subjects` and `sessions` lists. Pairs whose DICOM path does not exist on disk are skipped.
 
+Every log line emitted while a given subject/session is being processed is tagged with a `[sub-X ses-Y]` prefix, so output from a multi-participant run can be attributed to the participant that produced it.
+
 ## Output Structure
 
 ```
@@ -192,7 +194,7 @@ The pipeline enforces 14 named guards:
 | `non_empty_labels` | No series description strips to an empty label. |
 | `no_label_drift` | A known description re-derives to the same label as previously recorded. |
 | `no_rename_collision` | No undeclared task rename detected via signature matching. |
-| `exact_volume_counts` | BOLD volume counts match the registered expected count. |
+| `exact_volume_counts` | BOLD volume counts match the registered expected count. For an unregistered task with no clear within-session modal count: a 2-run tie is presumed to be one complete acquisition and one aborted/restarted one (fMRI protocols never over-acquire) and resolved by excluding the shorter run; a 3-or-more-run tie has no single run uniquely implicated as truncated and halts the session instead. |
 
 Two further invariants -- dcm2niix conversion success and physio run association/geometry -- are enforced via immediate exceptions (`ConversionError`, `PhysioAssociationError`, `PhysioParseError`, all `GuardError` subclasses) rather than the named meta-guard registry above, and so do not appear in `ALL_GUARD_NAMES`.
 
