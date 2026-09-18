@@ -25,6 +25,7 @@ The pipeline executes seven stages in sequence:
 | 5 | **Deface** | When `deface: true` is set in the study config, generates defaced copies of anatomical images in `derivatives/defaced/` via pydeface. The analysis `anat/` directories are never modified. Skipped when `deface: false` (the default). |
 | 6 | **Validate** | Runs bids-validator-deno against the assembled tree and emits a grouped findings report. |
 | 7 | **CUBIDs** | Generates an Entity Sets / Parameter Groups review artifact via cubids (non-blocking; skipped if cubids is not installed). |
+| 8 | **Group summary** | Aggregates every per-subject conversion report in `derivatives/fmri-bids-recon/` into a single human-readable `group_conversion_summary_{timestamp}.txt` file, with follow-up instructions for each flagged finding grouped by subject/session/task. Runs automatically on every invocation (non-blocking; skipped with a log warning if no per-subject reports are found). See [Group Conversion Summary](#group-conversion-summary) below. |
 
 ## Prerequisites
 
@@ -133,7 +134,7 @@ physio: false    # Set true to extract physiological traces
 deface: false    # Set true to deface anatomicals (requires FSL)
 ```
 
-See `config/study.example.yaml` for full documentation of each field, and `INPUT_SPECIFICATION.md` for the exhaustive input schema.
+Additional optional fields tune classification and guard strictness for studies whose scanner platform, protocol, or growth pattern deviates from the defaults: `scout_keywords`, `calibration_keywords`, `norm_tokens` (vendor-specific description/token vocabularies), `expected_anat_count` (per-modality anatomical count gate), `registry_mode`, `label_freeze_mode`, and `rename_detection` (strict-vs-advisory toggles for the volume-count, label-drift, and rename-collision guards). All default to their original strict/blocking behavior except `registry_mode` (`advisory`) and `rename_detection` (`warn`). See `config/study.example.yaml` for inline documentation and `INPUT_SPECIFICATION.md` for the exhaustive input schema.
 
 ## Usage
 
@@ -157,13 +158,19 @@ Every log line emitted while a given subject/session is being processed is tagge
       fmap/           # Fieldmap EPI pairs (with IntendedFor, B0FieldIdentifier)
       dwi/            # Diffusion NIfTI + sidecars
   derivatives/
-    fmri-bids-recon/  # Conversion reports, manifest
+    fmri-bids-recon/  # Conversion reports, manifest, group conversion summary
     defaced/          # Defaced anatomical images
   code/
     cubids/           # CUBIDs review artifact
   sourcedata/
     provenance/       # Original staging sidecars (full dcm2niix output)
 ```
+
+## Group Conversion Summary
+
+Every pipeline run aggregates all per-subject `sub-*_ses-*_conversion_report.md` files present in `derivatives/fmri-bids-recon/` into a single plain-text file: `group_conversion_summary_{YYYYMMDD_HHMMSS}.txt`. This is generated automatically on every invocation (not an opt-in flag) and is written with a fresh timestamp each run, so successive runs against a growing cohort (e.g., a longitudinal study enrolling subjects over time) each produce their own dated summary rather than overwriting the prior one.
+
+The file is organized into seven sections: a per-subject run overview table, high-severity findings requiring action, medium/low-severity findings for optional review, excluded runs, unclassified series, auto-registered tasks, and provenance. Every flagged finding is paired with a plain-language follow-up instruction and grouped by subject, session, and task, so a reviewer can triage an entire cohort's conversion without opening each per-subject report individually. Group summary generation is non-blocking: a failure (or an empty `derivatives/fmri-bids-recon/` directory) logs a warning and does not affect the pipeline's exit code.
 
 ## Exit Codes
 
@@ -192,9 +199,9 @@ The pipeline enforces 14 named guards:
 | `no_orphan_pairs` | Every validated fieldmap pair is assigned to at least one target series. |
 | `label_injectivity` | No two distinct series descriptions resolve to the same BIDS label. |
 | `non_empty_labels` | No series description strips to an empty label. |
-| `no_label_drift` | A known description re-derives to the same label as previously recorded. |
-| `no_rename_collision` | No undeclared task rename detected via signature matching. |
-| `exact_volume_counts` | BOLD volume counts match the registered expected count. For an unregistered task with no clear within-session modal count: a 2-run tie is presumed to be one complete acquisition and one aborted/restarted one (fMRI protocols never over-acquire) and resolved by excluding the shorter run; a 3-or-more-run tie has no single run uniquely implicated as truncated and halts the session instead. |
+| `no_label_drift` | A known description re-derives to the same label as previously recorded. Configurable via `label_freeze_mode`: `frozen` (default) halts on drift; `re-derive` accepts the fresh label and emits an advisory warning instead. |
+| `no_rename_collision` | No undeclared task rename detected via signature matching. Configurable via `rename_detection`: `strict` halts on a match; `warn` (default) emits an advisory warning and continues; `off` skips the check. |
+| `exact_volume_counts` | BOLD volume counts match the registered expected count. For an unregistered task with no clear within-session modal count: a 2-run tie is presumed to be one complete acquisition and one aborted/restarted one (fMRI protocols never over-acquire) and resolved by excluding the shorter run; a 3-or-more-run tie has no single run uniquely implicated as truncated and halts the session instead. Configurable via `registry_mode`: `strict` excludes a known series whose count mismatches its registry entry; `advisory` (default) retains it with a warning instead. |
 
 Two further invariants -- dcm2niix conversion success and physio run association/geometry -- are enforced via immediate exceptions (`ConversionError`, `PhysioAssociationError`, `PhysioParseError`, all `GuardError` subclasses) rather than the named meta-guard registry above, and so do not appear in `ALL_GUARD_NAMES`.
 

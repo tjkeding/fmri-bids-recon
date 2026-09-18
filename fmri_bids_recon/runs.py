@@ -44,6 +44,8 @@ class Excluded:
 def check_volume_counts(
     bolds: list[tuple[Series, str]],
     registry: dict[str, TaskRegistryEntry],
+    *,
+    registry_mode: str = "strict",
 ) -> tuple[list[tuple[Series, str]], list[Excluded], dict[str, TaskRegistryEntry], list[dict]]:
     """Validate BOLD volume counts against the task registry.
 
@@ -69,6 +71,12 @@ def check_volume_counts(
         Pairs of (series, task_label) for each BOLD candidate.
     registry : dict[str, TaskRegistryEntry]
         Mapping of SeriesDescription -> TaskRegistryEntry for known tasks.
+    registry_mode : str, keyword-only
+        ``"strict"`` (default): a known series whose volume count does not
+        match its registered expected_volumes is excluded. ``"advisory"``:
+        the series is retained in the surviving list and a HIGH-severity,
+        user-facing ``REGISTRY_VOLUME_MISMATCH`` warning is emitted instead
+        of excluding it.
 
     Returns
     -------
@@ -104,14 +112,24 @@ def check_volume_counts(
         if series.n_volumes == expected:
             surviving_bolds.append((series, task_label))
         else:
-            excluded_list.append(
-                Excluded(
-                    series=series,
-                    task_label=task_label,
-                    observed_volumes=series.n_volumes,
-                    expected_volumes=expected,
+            if registry_mode == "strict":
+                excluded_list.append(
+                    Excluded(
+                        series=series,
+                        task_label=task_label,
+                        observed_volumes=series.n_volumes,
+                        expected_volumes=expected,
+                    )
                 )
-            )
+            else:
+                surviving_bolds.append((series, task_label))
+                review_flags.append(graded_warning(
+                    _logger, SEVERITY_HIGH, "REGISTRY_VOLUME_MISMATCH",
+                    f"Task {task_label!r} series {series.series_number}: "
+                    f"n_volumes={series.n_volumes} vs registry expected "
+                    f"{expected}. registry_mode='advisory': series retained.",
+                    user_facing=True,
+                ))
 
     # Unknown series: group by task_label for within-session reasoning.
     unknown_by_task: dict[str, list[tuple[Series, str]]] = {}

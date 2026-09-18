@@ -32,6 +32,7 @@ from .stage6_validate import (
     assert_guards_executed, run_bids_validator, generate_cubids_report, ALL_GUARD_NAMES,
 )
 from .report import write_conversion_report
+from .group_report import write_group_summary
 from .manifest import read_manifest, update_manifest, should_skip, ManifestEntry
 from .deface import deface
 from .json_intermediate import dump_intermediate, load_intermediate
@@ -186,28 +187,49 @@ def run(
             guard_log['dcm2niix_version_floor'] = True
 
             # Stage 2
-            roles, review_flags = classify(all_series)
+            roles, review_flags = classify(
+                all_series,
+                scout_keywords=frozenset(config.scout_keywords),
+                calibration_keywords=frozenset(config.calibration_keywords),
+                norm_tokens=frozenset(config.norm_tokens),
+                expected_anat_count=config.expected_anat_count,
+            )
             series_map = {s.series_number: s for s in all_series}
             series_by_role = {sn: (series_map[sn], role) for sn, role in roles.items()}
             guard_log['anat_suffix_physics'] = True
 
             # Labels
-            labels_dict, registry_delta = resolve_labels(series_by_role, config.task_registry)
+            labels_dict, registry_delta = resolve_labels(
+                series_by_role, config.task_registry,
+                label_freeze_mode=config.label_freeze_mode,
+                rename_detection=config.rename_detection,
+            )
             guard_log['label_injectivity'] = True
             guard_log['non_empty_labels'] = True
             guard_log['no_label_drift'] = True
             guard_log['no_rename_collision'] = True
             bolds = [(series_map[sn], labels_dict[sn]) for sn, role in roles.items() if role == Role.BOLD]
-            surviving, excluded, vol_updates, vol_flags = check_volume_counts(bolds, config.task_registry)
+            surviving, excluded, vol_updates, vol_flags = check_volume_counts(
+                bolds, config.task_registry,
+                registry_mode=config.registry_mode,
+            )
             guard_log['exact_volume_counts'] = True
             review_flags.extend(vol_flags)
             run_indices = assign_run_indices(surviving)
+
+            # Remove volume-count-excluded series from roles before Stage 3 so
+            # downstream consumers (fieldmap grouping, run indexing) never see
+            # them; stage4_assemble.py's excluded_sns guard is a second,
+            # independent check against the same KeyError class of bug.
+            excluded_sns = {e.series.series_number for e in excluded}
+            for sn in excluded_sns:
+                if sn in roles:
+                    del roles[sn]
 
             # Stage 3
             ordered = order_series(all_series)
             fmaps = [(series_map[sn], role) for sn, role in roles.items() if role in (Role.FMAP_FUNC, Role.FMAP_DWI)]
             units, unpaired_fmaps = group_fieldmaps(fmaps, ordered, guard_log)
-            excluded_sns = {e.series.series_number for e in excluded}
             targets = [
                 (series_map[sn], role)
                 for sn, role in roles.items()
@@ -381,6 +403,17 @@ def run(
         generate_cubids_report(bids_root, bids_root / 'code' / 'cubids')
     except Exception as cubids_exc:
         logger.warning('cubids report generation failed (non-blocking): %s', cubids_exc)
+
+    # === PHASE 8: GROUP SUMMARY ===
+    try:
+        write_group_summary(
+            report_dir=bids_root / "derivatives" / "fmri-bids-recon",
+            engine_version=__version__,
+            dcm2niix_version=version_str,
+            config_path=str(effective_config_path) if effective_config_path else "",
+        )
+    except Exception as group_exc:
+        logger.warning('Group summary generation failed (non-blocking): %s', group_exc)
 
     all_warnings = get_warnings()
     status = "warning" if any(w["severity"] == "high" for w in all_warnings) else "success"

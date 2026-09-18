@@ -12,9 +12,12 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from .config import TaskRegistryEntry
+import logging
+
 from .errors import EmptyLabelError, LabelCollisionError, LabelDriftError, TaskRenameError
 from .sidecar import Series, description_stem
 from .stage2_classify import Role
+from .warnings import graded_warning, SEVERITY_HIGH
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +206,9 @@ _DROP_ROLES: frozenset[Role] = frozenset({
 def resolve_labels(
     series_by_role: dict[int, tuple[Series, Role]],
     registry: dict[str, TaskRegistryEntry],
+    *,
+    label_freeze_mode: str = "frozen",
+    rename_detection: str = "strict",
 ) -> tuple[dict[int, str], RegistryDelta]:
     """Resolve BIDS task labels for all BOLD and SBREF series.
 
@@ -223,6 +229,19 @@ def resolve_labels(
     registry : dict[str, TaskRegistryEntry]
         Existing task registry keyed by SeriesDescription. Descriptions absent
         from this dict are treated as new and auto-derived.
+    label_freeze_mode : str, keyword-only
+        ``"frozen"`` (default): a registered description that re-derives to
+        a different label under the current session's prefix raises
+        ``LabelDriftError``. ``"re-derive"``: the fresh derivation is
+        accepted and a HIGH-severity ``LABEL_DRIFT_ADVISORY`` warning is
+        appended to ``delta.warnings`` instead of halting.
+    rename_detection : str, keyword-only
+        ``"strict"`` (default): a new description whose acquisition
+        signature matches an existing registry entry under a different
+        description raises ``TaskRenameError``. ``"warn"``: the match is
+        allowed through with a HIGH-severity ``TASK_RENAME_ADVISORY``
+        warning appended to ``delta.warnings``. ``"off"``: the signature
+        check is skipped entirely.
 
     Returns
     -------
@@ -293,24 +312,37 @@ def resolve_labels(
 
     for desc in unique_descs:
         if desc in registry:
-            # Frozen label reuse
             frozen_label = registry[desc].label
-
-            # Drift guard: re-derive and compare against the frozen value
-            stored_prefix = registry[desc].prefix if registry[desc].prefix is not None else prefix
-            re_derived = derive_task_label(desc, stored_prefix)
-            if re_derived != frozen_label:
-                raise LabelDriftError(
-                    f"SeriesDescription '{desc}' re-derives to label '{re_derived}' "
-                    f"but the registry records '{frozen_label}'. Declare an explicit "
-                    f"label update in the registry before proceeding.",
-                    context={
-                        "description": desc,
-                        "frozen_label": frozen_label,
-                        "re_derived_label": re_derived,
-                    },
-                )
-            desc_to_label[desc] = frozen_label
+            if label_freeze_mode == "frozen":
+                stored_prefix = registry[desc].prefix if registry[desc].prefix is not None else prefix
+                re_derived = derive_task_label(desc, stored_prefix)
+                if re_derived != frozen_label:
+                    raise LabelDriftError(
+                        f"SeriesDescription '{desc}' re-derives to label '{re_derived}' "
+                        f"but the registry records '{frozen_label}'. Declare an explicit "
+                        f"label update in the registry before proceeding.",
+                        context={
+                            "description": desc,
+                            "frozen_label": frozen_label,
+                            "re_derived_label": re_derived,
+                        },
+                    )
+                desc_to_label[desc] = frozen_label
+            else:
+                re_derived = derive_task_label(desc, prefix)
+                if re_derived != frozen_label:
+                    delta.warnings.append(
+                        f"Label drift: '{desc}' re-derives to '{re_derived}' "
+                        f"(registry: '{frozen_label}'). Using re-derived label."
+                    )
+                    graded_warning(
+                        logging.getLogger(__name__), SEVERITY_HIGH,
+                        "LABEL_DRIFT_ADVISORY",
+                        f"SeriesDescription '{desc}' re-derives to '{re_derived}' "
+                        f"but registry records '{frozen_label}'. "
+                        f"label_freeze_mode='re-derive': using '{re_derived}'.",
+                    )
+                desc_to_label[desc] = re_derived
 
         else:
             # Auto-derive new label
@@ -327,42 +359,44 @@ def resolve_labels(
                 prefix=prefix,
             )
 
-            # Rename check: compare against the persisted registry
-            # (config.task_registry).  Two conditions each independently
-            # indicate an undeclared rename:
-            #
-            # 1. Acquisition-signature match — fires when old_desc appears
-            #    somewhere in the current session (any role), meaning its
-            #    acquisition fingerprint is available for comparison.
-            #
-            # 2. Label match against the persisted registry — fires when
-            #    new_label equals the label already stored for old_desc in the
-            #    persisted registry, regardless of whether old_desc is present
-            #    in the current session.  This covers the primary cross-session
-            #    rename scenario where the old description is entirely absent.
-            for old_desc in old_registry_descs:
-                old_label = registry[old_desc].label
-                old_sigs = set(all_sig_by_desc.get(old_desc, set()))
-                stored_sig = getattr(registry[old_desc], "signature", None)
-                if stored_sig is not None:
-                    old_sigs.add(stored_sig)
-                sig_match = bool(new_sigs & old_sigs)
-                label_match = (new_label == old_label)
-                if sig_match or label_match:
-                    raise TaskRenameError(
-                        f"New description '{desc}' (derived label '{new_label}') "
-                        f"{'shares an acquisition signature with' if sig_match else 'derives the same label as'} "
-                        f"old registry description '{old_desc}' (label '{old_label}'), which is "
-                        f"absent from the current session. Declare an explicit rename "
-                        f"in the task registry before proceeding.",
-                        context={
-                            "new_description": desc,
-                            "new_label": new_label,
-                            "old_description": old_desc,
-                            "old_label": old_label,
-                            "matching_signatures": list(new_sigs & old_sigs),
-                        },
-                    )
+            if rename_detection != "off":
+                for old_desc in old_registry_descs:
+                    old_label = registry[old_desc].label
+                    old_sigs = set(all_sig_by_desc.get(old_desc, set()))
+                    stored_sig = getattr(registry[old_desc], "signature", None)
+                    if stored_sig is not None:
+                        old_sigs.add(stored_sig)
+                    sig_match = bool(new_sigs & old_sigs)
+                    label_match = (new_label == old_label)
+                    if sig_match or label_match:
+                        if rename_detection == "strict":
+                            raise TaskRenameError(
+                                f"New description '{desc}' (derived label '{new_label}') "
+                                f"{'shares an acquisition signature with' if sig_match else 'derives the same label as'} "
+                                f"old registry description '{old_desc}' (label '{old_label}'), which is "
+                                f"absent from the current session. Declare an explicit rename "
+                                f"in the task registry before proceeding.",
+                                context={
+                                    "new_description": desc,
+                                    "new_label": new_label,
+                                    "old_description": old_desc,
+                                    "old_label": old_label,
+                                    "matching_signatures": list(new_sigs & old_sigs),
+                                },
+                            )
+                        else:
+                            delta.warnings.append(
+                                f"Possible rename: '{desc}' -> '{old_desc}' "
+                                f"({'signature match' if sig_match else 'label match'})."
+                            )
+                            graded_warning(
+                                logging.getLogger(__name__), SEVERITY_HIGH,
+                                "TASK_RENAME_ADVISORY",
+                                f"New description '{desc}' (label '{new_label}') "
+                                f"{'shares acquisition signature with' if sig_match else 'derives same label as'} "
+                                f"old registry description '{old_desc}' (label '{old_label}'). "
+                                f"rename_detection='warn': processing continues.",
+                            )
 
     # ------------------------------------------------------------------
     # Collision check: enforce injectivity (distinct description -> unique label)

@@ -120,7 +120,7 @@ def _is_spin_echo(s: Series) -> bool:
         if "SE" in s.scanning_sequence:
             return True
         psd = s.raw.get("PulseSequenceDetails", "")
-        if isinstance(psd, str) and "_se" in psd.lower():
+        if isinstance(psd, str) and "se" in psd.lower().split("_"):
             return True
         sn = s.sequence_name or ""
         if "epse" in sn.lower():
@@ -185,8 +185,25 @@ def _has_nonzero_bval(s: Series) -> bool:
         return False
 
 
-_SCOUT_KEYWORDS = frozenset({"scout", "localizer", "survey", "3-plane", "3plane"})
-_CALIBRATION_KEYWORDS = frozenset({"setter", "prescan"})
+_DEFAULT_SCOUT_KEYWORDS = frozenset({
+    "scout", "localizer", "survey", "3-plane", "3plane",
+    "aascout", "aahscout", "locator", "scanogram",
+    "plan scan", "planscan", "topogram",
+})
+_DEFAULT_CALIBRATION_KEYWORDS = frozenset({
+    "setter", "prescan", "_cal_", "calibration", "coilsurv",
+})
+_DEFAULT_NORM_TOKENS = frozenset({"NORM", "PURE", "SCIC", "CLEAR"})
+
+
+def _has_norm_token(s: Series, tokens: frozenset[str]) -> bool:
+    """Return True if any token in *tokens* appears in image_type_text or image_type."""
+    for tok in tokens:
+        if tok in s.image_type_text:
+            return True
+        if tok in s.image_type:
+            return True
+    return False
 
 
 def _is_epi_bold_physics(s: Series) -> bool:
@@ -205,6 +222,11 @@ def _is_epi_bold_physics(s: Series) -> bool:
 
 def classify(
     series: list[Series],
+    *,
+    scout_keywords: frozenset[str] = _DEFAULT_SCOUT_KEYWORDS,
+    calibration_keywords: frozenset[str] = _DEFAULT_CALIBRATION_KEYWORDS,
+    norm_tokens: frozenset[str] = _DEFAULT_NORM_TOKENS,
+    expected_anat_count: dict[str, int] | None = None,
 ) -> tuple[dict[int, Role], list[dict]]:
     """Classify each series into a :class:`Role`.
 
@@ -216,11 +238,37 @@ def classify(
     whose PE axis does not match any target series of the corresponding
     modality to ``DROP_CALIBRATION``.
 
+    When *expected_anat_count* is set, a further two-layer anatomical
+    calibration gate runs after the NORM/ND pass: for any modality whose
+    surviving count exceeds its expected count, series matching
+    *calibration_keywords* whose description stem is not shared by any
+    non-keyword series are demoted to ``DROP_CALIBRATION`` (with an
+    ``ANAT_CALIBRATION_DEMOTION`` warning); any residual over-count is then
+    reported as a HIGH-severity ``DUPLICATE_MODALITY`` warning. When
+    *expected_anat_count* is ``None`` (default), an over-count instead
+    produces the original MEDIUM-severity ``DUPLICATE_MODALITY`` warning
+    with no demotion attempted.
+
     Parameters
     ----------
     series : list[Series]
         Series list as returned by :func:`~fmri_bids_recon.sidecar.load_series`,
         sorted by ``series_number``.
+    scout_keywords : frozenset[str], keyword-only
+        Series-description substrings identifying localizer/scout sequences
+        to drop. Defaults to a vendor-agnostic set covering Siemens, GE, and
+        Philips terminology.
+    calibration_keywords : frozenset[str], keyword-only
+        Series-description substrings identifying navigator/calibration
+        sequences (e.g. Siemens vNav "setter") eligible for demotion.
+    norm_tokens : frozenset[str], keyword-only
+        ``ImageType``/``ImageTypeText`` tokens identifying the "normalized"
+        member of a vendor reconstruction-variant pair (Siemens NORM, GE
+        PURE, Philips CLEAR, SCIC), checked via ``_has_norm_token``.
+    expected_anat_count : dict[str, int] | None, keyword-only
+        Optional mapping of ``"T1W"``/``"T2W"`` to expected per-session
+        count, gating the two-layer anatomical calibration demotion
+        described above. ``None`` (default) disables the gate.
 
     Returns
     -------
@@ -237,6 +285,7 @@ def classify(
     # ------------------------------------------------------------------
     by_time: list[Series] = sorted(series, key=lambda s: s.acquisition_datetime)
     position_by_sn = {t.series_number: i for i, t in enumerate(by_time)}
+    sn_to_series = {s.series_number: s for s in series}
 
     for s in series:
         if s.series_number in roles:
@@ -270,7 +319,7 @@ def classify(
 
         # Signal 3: description keyword match with physics guard
         desc_lower = s.description.lower()
-        if any(kw in desc_lower for kw in _SCOUT_KEYWORDS):
+        if any(kw in desc_lower for kw in scout_keywords):
             if s.mr_acquisition_type == "2D" and s.n_volumes <= 3:
                 roles[s.series_number] = Role.DROP_SCOUT
                 continue
@@ -425,7 +474,7 @@ def classify(
     # ------------------------------------------------------------------
     # Anatomical NORM / ND twin resolution pass
     # ------------------------------------------------------------------
-    has_norm = any("NORM" in s.image_type_text for s in series)
+    has_norm = any(_has_norm_token(s, norm_tokens) for s in series)
     if has_norm:
         for suffix, drop_role in (
             (Role.T1W, Role.DROP_ANAT_ND_T1W),
@@ -441,7 +490,7 @@ def classify(
             if len(anat_series) < 2:
                 # Zero or one series: if the sole series has no NORM, flag it.
                 for s in anat_series:
-                    if "NORM" not in s.image_type_text:
+                    if not _has_norm_token(s, norm_tokens):
                         flags.append(
                             graded_warning(
                                 _logger, SEVERITY_LOW, "UNCLASSIFIED_SERIES",
@@ -461,7 +510,7 @@ def classify(
                 if len(group) < 2:
                     # Unpaired: emit review flag if no NORM token present.
                     s = group[0]
-                    if "NORM" not in s.image_type_text:
+                    if not _has_norm_token(s, norm_tokens):
                         flags.append(
                             graded_warning(
                                 _logger, SEVERITY_LOW, "NAVIGATOR_CANDIDATE",
@@ -473,8 +522,8 @@ def classify(
                     continue
 
                 # Paired group: promote NORM, demote ND twin.
-                norm_members = [s for s in group if "NORM" in s.image_type_text]
-                nd_members = [s for s in group if "NORM" not in s.image_type_text]
+                norm_members = [s for s in group if _has_norm_token(s, norm_tokens)]
+                nd_members = [s for s in group if not _has_norm_token(s, norm_tokens)]
 
                 if norm_members and nd_members:
                     for s in nd_members:
@@ -491,17 +540,51 @@ def classify(
                             )
                         )
 
-    for role_check in (Role.T1W, Role.T2W):
-        count = sum(1 for r in roles.values() if r == role_check)
-        if count > 1:
-            flags.append(
-                graded_warning(
-                    _logger, SEVERITY_MEDIUM, "DUPLICATE_MODALITY",
-                    f"{count} series classified as {role_check.value} after "
-                    f"classification; only one expected per session. "
+    if expected_anat_count is not None:
+        for suffix, role_str in ((Role.T1W, "T1W"), (Role.T2W, "T2W")):
+            expected = expected_anat_count.get(role_str)
+            if expected is None:
+                continue
+            anat_sns = [sn for sn, r in roles.items() if r == suffix]
+            if len(anat_sns) <= expected:
+                continue
+            non_kw_stems: set[str] = set()
+            for sn in anat_sns:
+                s = sn_to_series[sn]
+                if not any(kw in s.description.lower() for kw in calibration_keywords):
+                    non_kw_stems.add(description_stem(s.description))
+            for sn in list(anat_sns):
+                s = sn_to_series[sn]
+                if any(kw in s.description.lower() for kw in calibration_keywords):
+                    stem = description_stem(s.description)
+                    if stem not in non_kw_stems:
+                        roles[sn] = Role.DROP_CALIBRATION
+                        flags.append(graded_warning(
+                            _logger, SEVERITY_HIGH, "ANAT_CALIBRATION_DEMOTION",
+                            f"Series {sn} ({role_str}) matches calibration keyword "
+                            f"and count ({len(anat_sns)}) exceeds expected "
+                            f"({expected}); demoted to DROP_CALIBRATION.",
+                        ))
+            remaining = sum(1 for sn, r in roles.items() if r == suffix)
+            if remaining > expected:
+                flags.append(graded_warning(
+                    _logger, SEVERITY_HIGH, "DUPLICATE_MODALITY",
+                    f"{remaining} series classified as {suffix.value} after "
+                    f"calibration demotion; expected {expected}. "
                     f"Manual review recommended.",
+                ))
+    else:
+        for role_check in (Role.T1W, Role.T2W):
+            count = sum(1 for r in roles.values() if r == role_check)
+            if count > 1:
+                flags.append(
+                    graded_warning(
+                        _logger, SEVERITY_MEDIUM, "DUPLICATE_MODALITY",
+                        f"{count} series classified as {role_check.value} after "
+                        f"classification; only one expected per session. "
+                        f"Manual review recommended.",
+                    )
                 )
-            )
 
     # ------------------------------------------------------------------
     # Calibration sequence exclusion pass (PE axis validation)
@@ -563,7 +646,7 @@ def classify(
         if r not in (Role.FMAP_FUNC, Role.FMAP_DWI):
             continue
         desc_lower = s.description.lower()
-        if not any(kw in desc_lower for kw in _CALIBRATION_KEYWORDS):
+        if not any(kw in desc_lower for kw in calibration_keywords):
             continue
         if s.n_volumes != 1:
             continue

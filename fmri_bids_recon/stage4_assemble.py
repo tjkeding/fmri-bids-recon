@@ -311,7 +311,14 @@ def assemble(
     # ------------------------------------------------------------------
     # Per-series BIDS assembly
     # ------------------------------------------------------------------
+    # Defense-in-depth: pipeline.py already deletes excluded series from
+    # roles before Stage 3, but this guard is a second, independent check
+    # against the same KeyError class of bug (a caller that passes roles
+    # without that upstream deletion must not crash here).
+    excluded_sns = {e.series.series_number for e in excluded}
     for snum, role in roles.items():
+        if snum in excluded_sns:
+            continue
         series = series_map[snum]
 
         if role == Role.T1W:

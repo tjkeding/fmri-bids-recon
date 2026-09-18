@@ -9,7 +9,7 @@ build/
 tests/
 tools/
 sandbox/
-RAW_TEST_SUBJ_1/
+RAW_TEST_SUBJ_*/
 dcm_qa_*/
 
 # Development reports and internal documentation

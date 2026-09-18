@@ -87,3 +87,67 @@ physio: false
 # Defaced copies are written to derivatives/defaced/; the analysis
 # anat/ directories are never modified. Defaults to false when omitted.
 deface: false
+
+# ---------------------------------------------------------------------------
+# Classification and guard tuning (all OPTIONAL; defaults shown are safe for
+# most studies). See INPUT_SPECIFICATION.md Section 1.2 for full details.
+# ---------------------------------------------------------------------------
+
+# OPTIONAL. Series-description substrings (case-insensitive) identifying
+# localizer/scout sequences to drop. Overrides (does not extend) the default
+# list shown below.
+# scout_keywords:
+#   - 'scout'
+#   - 'localizer'
+#   - 'survey'
+#   - '3-plane'
+#   - '3plane'
+#   - 'aascout'
+#   - 'aahscout'
+#   - 'locator'
+#   - 'scanogram'
+#   - 'plan scan'
+#   - 'planscan'
+#   - 'topogram'
+
+# OPTIONAL. Series-description substrings (case-insensitive) identifying
+# navigator/calibration sequences (e.g., Siemens vNav "setter") eligible for
+# demotion during calibration sequence exclusion. Overrides the default list.
+# calibration_keywords:
+#   - 'setter'
+#   - 'prescan'
+#   - '_cal_'
+#   - 'calibration'
+#   - 'coilsurv'
+
+# OPTIONAL. ImageType/ImageTypeText tokens identifying the "normalized"
+# member of a vendor reconstruction-variant pair (Siemens NORM, GE PURE,
+# Philips SCIC/CLEAR). Used to prefer the normalized anatomical
+# reconstruction over its non-normalized twin. Overrides the default list.
+# norm_tokens:
+#   - 'NORM'
+#   - 'PURE'
+#   - 'SCIC'
+#   - 'CLEAR'
+
+# OPTIONAL. Per-modality expected anatomical count (T1W and/or T2W). When
+# set, a modality whose surviving count exceeds its expectation triggers a
+# calibration-keyword demotion pass before falling back to a
+# DUPLICATE_MODALITY warning. Defaults to null (no gate; unconditional
+# DUPLICATE_MODALITY warning on any anatomical over-count).
+# expected_anat_count:
+#   T1W: 1
+#   T2W: 1
+
+# OPTIONAL. 'strict' (exclude a volume-count-mismatched known series) or
+# 'advisory' (retain it with a warning instead). Defaults to 'advisory'.
+# registry_mode: 'advisory'
+
+# OPTIONAL. 'frozen' (halt on label drift from the registry) or 're-derive'
+# (accept the fresh label with an advisory warning). Defaults to 'frozen'.
+# label_freeze_mode: 'frozen'
+
+# OPTIONAL. 'strict' (halt on a rename-collision signature match), 'warn'
+# (advisory warning and continue), or 'off' (skip the check). Defaults to
+# 'warn'.
+# rename_detection: 'warn'

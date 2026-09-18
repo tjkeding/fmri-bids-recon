@@ -121,6 +121,42 @@ class StudyConfig:
     task_registry : dict[str, TaskRegistryEntry]
         Derived. Mapping of task label to its registry entry.  Populated by
         load_config() from the sidecar ``.registry.yaml`` file.
+    scout_keywords : list[str]
+        Series-description substrings that identify localizer/scout
+        sequences to drop.  Vendor-agnostic default set (Siemens, GE,
+        Philips terms); passed to :func:`stage2_classify.classify`.
+    calibration_keywords : list[str]
+        Series-description substrings that identify navigator/calibration
+        sequences (e.g. Siemens vNav "setter") eligible for demotion to
+        ``DROP_CALIBRATION``.  Passed to :func:`stage2_classify.classify`.
+    norm_tokens : list[str]
+        ``ImageType``/``ImageTypeText`` tokens identifying the "normalized"
+        member of a vendor reconstruction-variant pair (Siemens NORM,
+        GE PURE, Philips CLEAR, SCIC).  Used by the NORM/ND anatomical twin
+        resolution pass to prefer the normalized reconstruction.
+    expected_anat_count : dict[str, int] | None
+        Optional mapping of anatomical modality (``"T1W"``, ``"T2W"``) to
+        its expected per-session count.  When set, an anatomical count
+        exceeding its expectation triggers the two-layer calibration
+        demotion gate in :func:`stage2_classify.classify` before falling
+        back to a ``DUPLICATE_MODALITY`` warning.  ``None`` (default)
+        preserves the original unconditional ``DUPLICATE_MODALITY`` warning.
+    registry_mode : str
+        ``"strict"`` (exclude a volume-count-mismatched known series) or
+        ``"advisory"`` (default; retain it with a HIGH-severity
+        ``REGISTRY_VOLUME_MISMATCH`` warning).  Passed to
+        :func:`runs.check_volume_counts`.
+    label_freeze_mode : str
+        ``"frozen"`` (default; halt via ``LabelDriftError`` when a
+        registered description re-derives to a different label) or
+        ``"re-derive"`` (accept the fresh derivation and emit a
+        ``LABEL_DRIFT_ADVISORY`` warning instead of halting).  Passed to
+        :func:`labels.resolve_labels`.
+    rename_detection : str
+        ``"strict"`` (default; halt via ``TaskRenameError`` on a signature
+        match to a differently-named registry entry), ``"warn"`` (emit a
+        ``TASK_RENAME_ADVISORY`` warning and continue), or ``"off"`` (skip
+        the check entirely).  Passed to :func:`labels.resolve_labels`.
 
     Properties
     ----------
@@ -142,6 +178,21 @@ class StudyConfig:
     config_path: Path | None = None
     participants: list[ParticipantEntry] = field(default_factory=list)
     task_registry: dict[str, TaskRegistryEntry] = field(default_factory=dict)
+    scout_keywords: list[str] = field(default_factory=lambda: [
+        "scout", "localizer", "survey", "3-plane", "3plane",
+        "aascout", "aahscout", "locator", "scanogram",
+        "plan scan", "planscan", "topogram",
+    ])
+    calibration_keywords: list[str] = field(default_factory=lambda: [
+        "setter", "prescan", "_cal_", "calibration", "coilsurv",
+    ])
+    norm_tokens: list[str] = field(default_factory=lambda: [
+        "NORM", "PURE", "SCIC", "CLEAR",
+    ])
+    expected_anat_count: dict[str, int] | None = None
+    registry_mode: str = "advisory"
+    label_freeze_mode: str = "frozen"
+    rename_detection: str = "warn"
 
     @property
     def sourcedata_root(self) -> Path:
@@ -247,6 +298,45 @@ def _validate_raw(raw: dict) -> dict:
     deface = bool(raw.get("deface", False))
     schema_version = str(raw.get("schema_version", "1.0.0"))
 
+    scout_keywords = list(raw.get("scout_keywords", [
+        "scout", "localizer", "survey", "3-plane", "3plane",
+        "aascout", "aahscout", "locator", "scanogram",
+        "plan scan", "planscan", "topogram",
+    ]))
+    calibration_keywords = list(raw.get("calibration_keywords", [
+        "setter", "prescan", "_cal_", "calibration", "coilsurv",
+    ]))
+    norm_tokens = list(raw.get("norm_tokens", ["NORM", "PURE", "SCIC", "CLEAR"]))
+    expected_anat_count_raw = raw.get("expected_anat_count")
+    expected_anat_count = None
+    if expected_anat_count_raw is not None:
+        if not isinstance(expected_anat_count_raw, dict):
+            raise ValueError(
+                f"expected_anat_count must be a mapping of modality -> count, "
+                f"got type: {type(expected_anat_count_raw).__name__}"
+            )
+        expected_anat_count = {
+            str(k).upper(): int(v) for k, v in expected_anat_count_raw.items()
+        }
+    registry_mode = str(raw.get("registry_mode", "advisory"))
+    if registry_mode not in ("advisory", "strict"):
+        raise ValueError(
+            f"registry_mode must be 'advisory' or 'strict', "
+            f"got: {registry_mode!r}"
+        )
+    label_freeze_mode = str(raw.get("label_freeze_mode", "frozen"))
+    if label_freeze_mode not in ("frozen", "re-derive"):
+        raise ValueError(
+            f"label_freeze_mode must be 'frozen' or 're-derive', "
+            f"got: {label_freeze_mode!r}"
+        )
+    rename_detection = str(raw.get("rename_detection", "warn"))
+    if rename_detection not in ("strict", "warn", "off"):
+        raise ValueError(
+            f"rename_detection must be 'strict', 'warn', or 'off', "
+            f"got: {rename_detection!r}"
+        )
+
     for sub in subjects:
         _validate_bids_label(sub, "sub")
 
@@ -289,6 +379,13 @@ def _validate_raw(raw: dict) -> dict:
         "physio": physio,
         "deface": deface,
         "schema_version": schema_version,
+        "scout_keywords": scout_keywords,
+        "calibration_keywords": calibration_keywords,
+        "norm_tokens": norm_tokens,
+        "expected_anat_count": expected_anat_count,
+        "registry_mode": registry_mode,
+        "label_freeze_mode": label_freeze_mode,
+        "rename_detection": rename_detection,
     }
 
 
@@ -388,6 +485,13 @@ def _resolve_config(
         config_path=config_path,
         participants=participants,
         task_registry=task_registry,
+        scout_keywords=validated["scout_keywords"],
+        calibration_keywords=validated["calibration_keywords"],
+        norm_tokens=validated["norm_tokens"],
+        expected_anat_count=validated["expected_anat_count"],
+        registry_mode=validated["registry_mode"],
+        label_freeze_mode=validated["label_freeze_mode"],
+        rename_detection=validated["rename_detection"],
     )
 
 

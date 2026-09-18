@@ -45,6 +45,6 @@ Key constraints:
 ## Guardrails
 
 - No personally-identifiable information in any output (paths, keys, identifiers).
-- No attribution of authorship or co-authorship to AI tools.
+- AI tools must not be credited as authors or listed in attribution metadata.
 - Verification required before actions with non-trivial consequences.
 - Clarifying questions required when ambiguity exists.
